@@ -16,8 +16,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from neraca.evaluasi.pdf_vs_xbrl import FaktaRingkas, Pencocok, cocokkan  # noqa: E402
 from neraca.extract.pdf_tabel import (  # noqa: E402
+    deteksi_format,
+    deteksi_mata_uang,
     deteksi_skala,
     ekstrak_halaman,
+    jenis_laporan,
     parse_angka_id,
     parse_rentang,
 )
@@ -92,6 +95,38 @@ class TesAngka(unittest.TestCase):
         self.assertEqual(deteksi_skala("(Dalam miliaran Rupiah)"), 9)
         self.assertEqual(deteksi_skala("(Dalam ribuan Dolar AS)"), 3)
         self.assertEqual(deteksi_skala("tanpa keterangan"), 0)
+
+    def test_skala_kalimat_lain(self):
+        # TLKM, ICBP, ADRO, MYOR
+        self.assertEqual(deteksi_skala("(Angka dalam tabel disajikan dalam miliaran Rupiah, kecuali "
+                                       "dinyatakan lain)"), 9)
+        self.assertEqual(deteksi_skala("(Disajikan dalam Jutaan Rupiah,\nKecuali Dinyatakan Lain)"), 6)
+        self.assertEqual(deteksi_skala("(Expressed in thousands of US Dollars, except par value)"), 3)
+        self.assertEqual(deteksi_skala("(Angka-angka Disajikan dalam Rupiah, kecuali Dinyatakan Lain)"), 0)
+
+    def test_mata_uang(self):
+        self.assertEqual(deteksi_mata_uang("(Dinyatakan dalam ribuan Dolar AS, kecuali ...)"), "USD")
+        self.assertEqual(deteksi_mata_uang("(Dalam jutaan Rupiah)"), "IDR")
+
+    def test_ribuan_koma(self):
+        # ASII, GOTO, ADRO, UNVR, BRIS
+        self.assertEqual(parse_angka_id("19,177,524", ","), Decimal(19177524))
+        self.assertEqual(parse_angka_id("(165,684)", ","), Decimal(-165684))
+        self.assertEqual(parse_angka_id("238.73", ","), Decimal("238.73"))
+
+    def test_kurung_terpisah_tetap_negatif(self):
+        self.assertEqual(parse_angka_id("34.270.278.782)"), Decimal(-34270278782))
+        self.assertEqual(parse_angka_id("(78.900"), Decimal(-78900))
+
+    def test_deteksi_format(self):
+        self.assertEqual(deteksi_format(["19,177,524", "1,747,595", "4"]), ",")
+        self.assertEqual(deteksi_format(["29.315.878", "(12.137.180)", "445"]), ".")
+
+    def test_jenis_laporan_dwibahasa(self):
+        self.assertEqual(jenis_laporan("LAPORAN POSISI CONSOLIDATED STATEMENT OF KEUANGAN "
+                                       "KONSOLIDASIAN"), "posisi_keuangan")
+        self.assertEqual(jenis_laporan("LAPORAN ARUS KAS KONSOLIDASIAN"), "arus_kas")
+        self.assertEqual(jenis_laporan("LAPORAN PERUBAHAN EKUITAS KONSOLIDASIAN"), "perubahan_ekuitas")
 
     def test_rentang_halaman(self):
         self.assertEqual(parse_rentang("8-11,14"), [8, 9, 10, 11, 14])
@@ -175,6 +210,119 @@ class TesEkstrakHalaman(unittest.TestCase):
         kata = [{"text": "Kas", "x0": 79, "x1": 92, "top": 100, "bottom": 108}]
         self.assertEqual(ekstrak_halaman(kata, 1), [])
 
+    def test_butir_strip_memulai_pos_baru(self):
+        # ASII, GOTO, UNVR: "- Pihak berelasi" di bawah "Utang usaha:"
+        hasil = (Halaman().baris("Utang usaha:")
+                 .lanjut("- Pihak berelasi", "18", "5.158", "5.754", x=81)
+                 .lanjut("- Pihak ketiga", "18", "34.889", "34.775", x=81).ekstrak())
+        pos = per_pos(hasil)
+        self.assertEqual(set(pos), {"Pihak berelasi", "Pihak ketiga"})
+        self.assertEqual(next(b.induk for b in hasil if b.label == "Pihak ketiga"), "Utang usaha:")
+
+    def test_kurung_belum_ditutup_berarti_lanjutan(self):
+        # BMRI: "Dasar dan dilusian (dalam" / "Rupiah penuh)"
+        hasil = (Halaman().baris("LABA PER SAHAM")
+                 .baris("Dasar dan dilusian (dalam", x=88)
+                 .lanjut("Rupiah penuh)", "", "597,67", "589,93", x=88).ekstrak())
+        eps = [b for b in hasil if b.jenis == "nilai"]
+        self.assertEqual(eps[0].label, "Dasar dan dilusian (dalam Rupiah penuh)")
+        self.assertEqual({b.tahun: b.nilai for b in eps}, {2024: "597.67", 2023: "589.93"})
+
+    def test_satuan_penuh_dari_induk_per_saham(self):
+        # TLKM: "(dalam jumlah penuh)" ada di judul induk, bukan di label.
+        hasil = (Halaman().baris("LABA BERSIH PER SAHAM (dalam jumlah penuh)")
+                 .baris("Laba bersih per saham", "", "238,73", "247,92", x=88)
+                 .ekstrak("(Angka dalam tabel disajikan dalam miliaran Rupiah)"))
+        eps = next(b for b in hasil if b.jenis == "nilai" and b.tahun == 2024)
+        self.assertEqual((eps.nilai, eps.skala), ("238.73", 0))
+
+    def test_nilai_nominal_per_saham_tetap_satuan_halaman(self):
+        # UNVR: modal saham menyebut "nilai nominal Rp 2 (nilai penuh) per saham".
+        hasil = (Halaman()
+                 .baris("Modal saham (seluruhnya disetor penuh dengan nilai nominal Rp 2 (nilai penuh)")
+                 .lanjut("per saham)", "", "76.300", "76.300", x=88).ekstrak())
+        modal = next(b for b in hasil if b.jenis == "nilai" and b.tahun == 2024)
+        self.assertEqual((modal.nilai, modal.skala), ("76300000000", 6))
+
+    def test_subtotal_tanpa_label(self):
+        hasil = (Halaman().baris("Pihak berelasi", "", "194.411", "461.097")
+                 .lanjut("Pihak ketiga", "", "46.474.028", "36.144.993")
+                 .baris("", "", "46.668.439", "36.606.090").ekstrak())
+        subtotal = [b for b in hasil if b.jenis == "nilai" and b.label == ""]
+        self.assertEqual({b.tahun: b.teks_nilai for b in subtotal},
+                         {2024: "46.668.439", 2023: "36.606.090"})
+
+
+def kata(teks: str, x0: float, top: float, x1: float | None = None) -> dict:
+    x1 = x1 if x1 is not None else x0 + len(teks) * LEBAR_HURUF
+    return {"text": teks, "x0": x0, "x1": x1, "top": top, "bottom": top + 8}
+
+
+class TesTataLetakLain(unittest.TestCase):
+    def test_dwibahasa_header_dua_baris_dan_label_inggris(self):
+        # ICBP/GOTO/ASII: "Catatan/" lalu "Notes 2024 2023"; label Inggris di kanan.
+        w = [
+            kata("LAPORAN", 94, 80), kata("POSISI", 139, 80), kata("KEUANGAN", 169, 80),
+            kata("Catatan/", 248, 146.8), kata("Notes", 252, 155.3),
+            kata("2024", 305, 155.3), kata("2023", 364, 155.3),
+            kata("Kas", 94, 198.5), kata("dan", 109, 198.5), kata("setara", 124, 198.5),
+            kata("kas", 147, 198.5), kata("4", 262, 198.5),
+            kata("19,177,524", 302, 198.5, 339), kata("25,143,935", 362, 198.5, 400),
+            kata("Cash", 450, 198.5), kata("and", 469, 198.5), kata("cash", 484, 198.5),
+            kata("2", 494, 207), kata("Deposito", 94, 207), kata("berjangka", 126, 207),
+            kata("5", 262, 207), kata("1,747,595", 306, 207, 339), kata("-", 397, 207, 400),
+        ]
+        hasil = ekstrak_halaman(w, 13, "(Dinyatakan dalam jutaan Rupiah, kecuali dinyatakan lain)")
+        pos = per_pos(hasil)
+        self.assertEqual(pos["Kas dan setara kas"], {2024: "19,177,524", 2023: "25,143,935"})
+        kas = next(b for b in hasil if b.label == "Kas dan setara kas" and b.tahun == 2024)
+        self.assertEqual((kas.nilai, kas.catatan, kas.laporan), ("19177524000000", "4",
+                                                                 "posisi_keuangan"))
+        deposito = {b.tahun: b.nilai for b in hasil if b.label == "Deposito berjangka"}
+        self.assertEqual(deposito, {2024: "1747595000000", 2023: "0"})
+
+    def test_catatan_di_antara_kolom_dan_angka_terpotong(self):
+        # MYOR: kolom 2024 | Catatan | 2023, angka satuan penuh terpotong jadi dua kata.
+        w = [
+            kata("Catatan/", 281, 119.6), kata("2024", 224, 128.2), kata("Notes", 284, 128.2),
+            kata("2023", 347, 128.2),
+            kata("Pihak", 66, 236.5), kata("ketiga", 84, 236.5),
+            kata("4", 217, 236.5, 220), kata("02.141.744.744", 220, 236.5, 264),
+            kata("34", 290, 236.5, 297),
+            kata("(", 333, 236.5, 336), kata("50.189.161.535)", 336, 236.5, 385),
+            kata("Third", 407, 236.5), kata("parties", 423, 236.5),
+        ]
+        hasil = ekstrak_halaman(w, 10, "(Angka-angka Disajikan dalam Rupiah, kecuali Dinyatakan Lain)")
+        nilai = {b.tahun: b.nilai for b in hasil if b.jenis == "nilai"}
+        self.assertEqual(nilai, {2024: "402141744744", 2023: "-50189161535"})
+        self.assertEqual(hasil[0].catatan, "34")
+
+    def test_header_tanpa_catatan(self):
+        # ASII arus kas: header hanya "2024 2023".
+        w = [
+            kata("LAPORAN", 72, 80), kata("ARUS", 115, 80), kata("KAS", 140, 80),
+            kata("2024", 281, 150.8), kata("2023", 334, 150.8),
+            kata("Pelunasan", 72, 179.9), kata("pinjaman", 112, 179.9),
+            kata("(165,684)", 279, 179.9, 313), kata("(78,715)", 337, 179.9, 367),
+            kata("Repayments", 379, 179.9),
+        ]
+        hasil = ekstrak_halaman(w, 18, "(Dinyatakan dalam miliaran Rupiah)")
+        nilai = {b.tahun: b.nilai for b in hasil if b.jenis == "nilai"}
+        self.assertEqual(nilai, {2024: "-165684000000000", 2023: "-78715000000000"})
+        self.assertEqual(hasil[0].laporan, "arus_kas")
+
+    def test_tiga_kolom_tahun_bertanda_bintang(self):
+        # BBRI: "2024  2023*)  2022*)"
+        w = [
+            kata("Catatan/", 187, 189.6), kata("Notes", 191, 197.6),
+            kata("2024", 253, 197.6), kata("2023*)", 320, 197.6), kata("2022*)", 387, 197.6),
+            kata("Pinjaman", 64, 229.7), kata("Syariah", 95, 229.7), kata("12", 197, 229.7),
+            kata("49.889.082", 256, 229.7, 290), kata("45.937.696", 322, 229.7, 357),
+            kata("38.099.994", 392, 229.7, 427), kata("Sharia", 497, 229.7),
+        ]
+        hasil = ekstrak_halaman(w, 15, "(Disajikan dalam jutaan Rupiah)")
+        self.assertEqual({b.tahun for b in hasil if b.jenis == "nilai"}, {2024, 2023, 2022})
+
 
 class TesPencocok(unittest.TestCase):
     def setUp(self):
@@ -240,6 +388,27 @@ class TesCocokkanCsv(unittest.TestCase):
         awal = hasil["KAS DAN SETARA KAS, AWAL TAHUN"]
         self.assertEqual(awal.status, "persis")
         self.assertIn("saldo akhir 2023", awal.konsep)
+
+    def test_konsisten_internal_dan_tanpa_kunci(self):
+        kolom_x = ["emiten", "tahun_laporan", "konsep", "nilai", "tahun_periode", "dimensi", "file_html"]
+        fakta = [dict(emiten="BMRI", tahun_laporan=2024, konsep=f"Pos{i}", nilai=1000 + i,
+                      tahun_periode=2024, dimensi="", file_html="4220000.html") for i in range(25)]
+        xbrl = self.tulis("x.csv", kolom_x, fakta)
+        kolom_p = ["halaman", "urutan", "induk", "label", "jenis", "tahun", "nilai", "teks_nilai"]
+        baris = [
+            # 2024: tidak ada di XBRL, tetapi berelasi + ketiga = total
+            (19, 1, "Pihak berelasi", 2024, 4299236), (19, 2, "Pihak ketiga", 2024, 4790802),
+            (19, 3, "Total", 2024, 9090038),
+            # 2022: XBRL tidak punya data tahun ini
+            (19, 4, "Pihak ketiga", 2022, 123456),
+        ]
+        pdf = self.tulis("p.csv", kolom_p, [
+            dict(halaman=h, urutan=u, induk="", label=l, jenis="nilai", tahun=t, nilai=v,
+                 teks_nilai=str(v)) for h, u, l, t, v in baris])
+        hasil = {(h.label, h.tahun): h.status for h in cocokkan(pdf, xbrl, "BMRI", 2024)}
+        self.assertEqual(hasil[("Total", 2024)], "konsisten_internal")
+        self.assertEqual(hasil[("Pihak berelasi", 2024)], "konsisten_internal")
+        self.assertEqual(hasil[("Pihak ketiga", 2022)], "tanpa_kunci")
 
 
 if __name__ == "__main__":

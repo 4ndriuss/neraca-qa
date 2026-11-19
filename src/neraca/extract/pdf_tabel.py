@@ -1,32 +1,41 @@
 """Ekstraksi tabel laporan keuangan dari PDF berdasarkan posisi kata.
 
-Laporan keuangan emiten berbentuk tabel tanpa garis: label di kiri, kolom
-nomor catatan, lalu satu kolom nilai per tahun. Tabel dibaca dari posisi
-setiap kata (``pdfplumber``), bukan dari teks per baris, karena teks per baris
-mencampur nomor catatan (``40,43``) dengan angka.
+Laporan keuangan emiten berbentuk tabel tanpa garis: label, kolom nomor
+catatan, dan satu kolom nilai per tahun; laporan dwibahasa menambahkan label
+Inggris di sisi kanan. Tabel dibaca dari posisi setiap kata (``pdfplumber``),
+bukan dari teks per baris, karena teks per baris mencampur nomor catatan
+(``40,43``) dengan angka.
 
-Aturan yang dipakai (diturunkan dari laporan BBCA 2024):
+Aturan yang dipakai (diturunkan dari laporan tahunan 2024 sebelas emiten):
 
-- Header tabel adalah baris yang memuat kata ``Catatan`` dan tahun-tahun kolom.
-- Kata di kiri kolom catatan adalah label; kata di kanan batas kolom nilai
-  dimasukkan ke kolom tahun terdekat.
+- Header tabel adalah kata ``Catatan`` (atau ``Catatan/``) beserta tahun-tahun
+  kolom di baris yang sama atau sedikit di atas/bawahnya (``2024``,
+  ``2024/``, ``2023*)``). Posisi kolom diambil dari header, sehingga kolom
+  catatan boleh berada di kiri kolom tahun (umum) atau di antaranya (MYOR).
+- Kata di kiri kolom pertama adalah label Indonesia. Kata di kanan kolom tahun
+  terakhir adalah label Inggris dan diabaikan. Kata lain masuk ke kolom
+  terdekat: nomor catatan, atau angka untuk tahun tersebut.
+- Format angka dideteksi per halaman: titik (``1.234.567``) atau koma
+  (``1,234,567``) sebagai pemisah ribuan. Angka yang terpotong menjadi dua kata
+  yang bersentuhan (``4`` + ``.601.449.023.397``) disambung dulu.
 - Label yang terpotong ke beberapa baris digabung sampai ketemu baris yang
   punya nilai. Baris lanjutan berjarak rapat (tanpa baris kosong) dari baris
   sebelumnya dan diawali huruf kecil, angka, kurung, atau ``Rp``, atau
-  merupakan baris kapital semua di bawah baris kapital semua (judul seperti
-  ``LABA BERSIH YANG DAPAT DIATRIBUSIKAN`` / ``KEPADA:``). Baris rapat yang
-  diawali huruf kapital biasa memulai pos baru (``Pihak berelasi``).
+  merupakan baris kapital semua di bawah baris kapital semua. Baris rapat yang
+  diawali huruf kapital biasa, atau butir ``- Pihak ketiga``, memulai pos baru.
 - Nomor catatan bisa terpotong ke baris di atas labelnya; baris yang hanya
   berisi nomor catatan disimpan untuk pos berikutnya.
 - Baris tanpa nilai yang diikuti pos baru dianggap judul bagian (``ASET``).
-- Catatan kaki halaman (``Catatan atas laporan keuangan ...``) dan semua baris
-  di bawahnya diabaikan.
+  Baris bernilai tanpa label (subtotal) dicatat dengan label kosong.
+- Catatan kaki ("... merupakan bagian yang tidak terpisahkan ...") dan semua
+  baris di bawahnya diabaikan.
 - Kolom ``induk`` berisi judul bagian yang membawahi pos itu, ditentukan dari
   indentasi (misalnya ``Kredit yang diberikan`` untuk ``Pihak ketiga``).
 
 Cara pakai::
 
-    neraca-pdf data/raw/BBCA_2024_lk.pdf --halaman 8-11,14-15
+    neraca-pdf data/raw/BBCA_2024_lk.pdf                 # cari halaman otomatis
+    neraca-pdf data/raw/BBCA_2024_lk.pdf --halaman 8-11  # halaman tertentu
 """
 
 from __future__ import annotations
@@ -35,15 +44,36 @@ import argparse
 import csv
 import re
 import sys
+from collections import Counter
 from dataclasses import asdict, dataclass, field, fields
 from decimal import Decimal
 from pathlib import Path
 
-_ANGKA = re.compile(r"^\(?-?\d{1,3}(?:\.\d{3})*(?:,\d+)?\)?$")
 _STRIP = re.compile(r"^[-–—]$")
-_CATATAN = re.compile(r"^[0-9a-z]+(?:[,.][0-9a-z]+)*[,.]?$")
-_TAHUN = re.compile(r"^(19|20)\d{2}$")
-_SATUAN = (("miliar", 9), ("jutaan", 6), ("ribuan", 3))
+_ANGKA = {
+    ".": re.compile(r"^\(?-?\d{1,3}(?:\.\d{3})*(?:,\d+)?\)?$"),
+    ",": re.compile(r"^\(?-?\d{1,3}(?:,\d{3})*(?:\.\d+)?\)?$"),
+}
+_GRUP_RIBUAN = {".": re.compile(r"\d\.\d{3}(?!\d)"), ",": re.compile(r"\d,\d{3}(?!\d)")}
+_CATATAN = re.compile(r"^[0-9a-zA-Z().,/]+$")
+_TAHUN = re.compile(r"^((?:19|20)\d{2})(?:\*\)?|\*|/|,)*$")
+_CATATAN_KAKI = re.compile(
+    r"^catatan atas laporan keuangan|merupakan bagian yang tidak terpisahkan|"
+    r"^the accompanying notes", re.IGNORECASE)
+_SATUAN = (
+    (r"miliar|billion", 9),
+    (r"jutaan|juta\b|million", 6),
+    (r"ribuan|thousand", 3),
+)
+# Judul dwibahasa bisa terselip kata Inggris: "LAPORAN POSISI CONSOLIDATED STATEMENT OF KEUANGAN".
+_SELA = r"(?:\W+\S+){0,5}?\W+"
+JENIS_LAPORAN = (
+    ("perubahan_ekuitas", re.compile(r"perubahan" + _SELA + r"ekuitas", re.IGNORECASE)),
+    ("posisi_keuangan", re.compile(r"posisi" + _SELA + r"keuangan", re.IGNORECASE)),
+    ("laba_rugi", re.compile(r"laba" + _SELA + r"rugi", re.IGNORECASE)),
+    ("arus_kas", re.compile(r"arus" + _SELA + r"kas", re.IGNORECASE)),
+)
+_HALAMAN_CATATAN = re.compile(r"catatan\s+atas" + _SELA + r"laporan\s+keuangan", re.IGNORECASE)
 
 
 @dataclass
@@ -54,18 +84,29 @@ class Baris:
     catatan: str
     jenis: str  # nilai | judul
     induk: str = ""
+    laporan: str = ""
     tahun: int | None = None
     nilai: str = ""
     teks_nilai: str = ""
     skala: int = 0
+    mata_uang: str = ""
     y: float = 0.0
     indentasi: float = 0.0
 
 
 @dataclass
 class _Kolom:
-    tahun: int
+    jenis: str  # catatan | tahun
     tengah: float
+    tahun: int | None = None
+
+
+@dataclass
+class _Header:
+    indeks: int  # indeks baris terakhir header
+    kolom: list[_Kolom]
+    batas_label: float
+    batas_kanan: float
 
 
 @dataclass
@@ -77,32 +118,89 @@ class _Tunda:
     y_terakhir: float = 0.0
 
 
-def parse_angka_id(teks: str) -> Decimal | None:
-    """Ubah angka format Indonesia (``1.234.567``, ``(1.234)``, ``-``) ke Decimal.
+def parse_angka_id(teks: str, ribuan: str = ".") -> Decimal | None:
+    """Ubah teks angka laporan keuangan ke Decimal.
 
+    ``ribuan`` adalah pemisah ribuan: ``"."`` untuk ``1.234.567,89`` atau
+    ``","`` untuk ``1,234,567.89``. Kurung berarti negatif, strip berarti nol.
     Mengembalikan ``None`` bila teks bukan angka.
     """
     teks = teks.strip()
     if _STRIP.match(teks):
         return Decimal(0)
-    if not _ANGKA.match(teks):
+    if not _ANGKA[ribuan].match(teks):
         return None
-    negatif = teks.startswith("(") and teks.endswith(")") or teks.startswith("-")
-    bersih = teks.strip("()").lstrip("-").replace(".", "").replace(",", ".")
+    # Kurung buka atau tutup saja sudah cukup: di PDF keduanya kadang terpisah dari angkanya.
+    negatif = teks.startswith("(") or teks.endswith(")") or teks.startswith("-")
+    bersih = teks.strip("()").lstrip("-")
+    desimal = "," if ribuan == "." else "."
+    bersih = bersih.replace(ribuan, "").replace(desimal, ".")
     nilai = Decimal(bersih)
     return -nilai if negatif else nilai
 
 
+def deteksi_format(teks: list[str]) -> str:
+    """Tebak pemisah ribuan dari kumpulan teks angka: ``"."`` atau ``","``."""
+    hitung = Counter()
+    for t in teks:
+        for pemisah, pola in _GRUP_RIBUAN.items():
+            hitung[pemisah] += len(pola.findall(t))
+    return "," if hitung[","] > hitung["."] else "."
+
+
+_KETERANGAN_SATUAN = re.compile(r"\(([^()]*\b(?:dalam|expressed in|presented in)\b[^()]*)\)",
+                                re.IGNORECASE)
+
+
+def _keterangan_satuan(teks_halaman: str) -> str:
+    """Isi kurung keterangan satuan, misalnya ``Angka dalam tabel disajikan dalam miliaran ...``."""
+    m = _KETERANGAN_SATUAN.search(" ".join(teks_halaman.split()))
+    return m.group(1).lower() if m else ""
+
+
 def deteksi_skala(teks_halaman: str) -> int:
     """Baca satuan dari keterangan seperti ``(Dalam jutaan Rupiah ...)``."""
-    m = re.search(r"\(Dalam ([^)]*)\)", teks_halaman, re.IGNORECASE)
-    if not m:
-        return 0
-    keterangan = m.group(1).lower()
-    for kata, skala in _SATUAN:
-        if kata in keterangan:
+    keterangan = _keterangan_satuan(teks_halaman)
+    for pola, skala in _SATUAN:
+        if re.search(pola, keterangan):
             return skala
     return 0
+
+
+def deteksi_mata_uang(teks_halaman: str) -> str:
+    return "USD" if re.search(r"dolar|dollar", _keterangan_satuan(teks_halaman)) else "IDR"
+
+
+def jenis_laporan(teks_judul: str) -> str:
+    for nama, pola in JENIS_LAPORAN:
+        if pola.search(teks_judul):
+            return nama
+    return ""
+
+
+def _tengah(w: dict) -> float:
+    return (w["x0"] + w["x1"]) / 2
+
+
+def _sambung_angka(baris: list[dict]) -> list[dict]:
+    """Sambung kata bersentuhan yang sebenarnya satu angka.
+
+    MYOR menulis angka satuan penuh yang terpotong di sembarang posisi:
+    ``4`` + ``.601.449.023.397``, ``4`` + ``02.141.744.744``, atau kurung buka
+    yang terpisah, ``(`` + ``34.270.278.782)``. Tanpa penyambungan, tanda
+    negatifnya hilang.
+    """
+    hasil: list[dict] = []
+    for w in baris:
+        if hasil:
+            a = hasil[-1]
+            bersentuhan = w["x0"] - a["x1"] <= 0.6
+            if bersentuhan and re.fullmatch(r"\(|\(?[\d.,]+", a["text"]) and re.fullmatch(
+                    r"[\d.,]+\)?|\)", w["text"]) and not (a["text"] == "(" and w["text"] == ")"):
+                hasil[-1] = {**a, "text": a["text"] + w["text"], "x1": w["x1"]}
+                continue
+        hasil.append(dict(w))
+    return hasil
 
 
 def _kelompokkan_baris(kata: list[dict], toleransi: float = 2.0) -> list[list[dict]]:
@@ -113,20 +211,60 @@ def _kelompokkan_baris(kata: list[dict], toleransi: float = 2.0) -> list[list[di
             hasil[-1].append(w)
         else:
             hasil.append([w])
-    return [sorted(b, key=lambda w: w["x0"]) for b in hasil]
+    return [_sambung_angka(sorted(b, key=lambda w: w["x0"])) for b in hasil]
 
 
-def _cari_header(baris: list[list[dict]]) -> tuple[int, dict, list[_Kolom]] | None:
-    for i, b in enumerate(baris):
-        catatan = next((w for w in b if w["text"] == "Catatan"), None)
-        tahun = [w for w in b if _TAHUN.match(w["text"]) and catatan and w["x0"] > catatan["x1"]]
-        if catatan and tahun:
-            kolom = [_Kolom(int(w["text"]), (w["x0"] + w["x1"]) / 2) for w in tahun]
-            return i, catatan, kolom
+def _header_tanpa_catatan(baris: list[list[dict]], maks_baris: int = 30) -> _Header | None:
+    """Header cadangan untuk tabel tanpa kolom catatan (arus kas ASII): baris berisi
+    hanya tahun, minimal dua."""
+    for i, b in enumerate(baris[:maks_baris]):
+        tahun = [w for w in b if _TAHUN.match(w["text"])]
+        if len(tahun) >= 2 and len(tahun) == len(b):
+            kolom = [_Kolom("tahun", _tengah(w), int(_TAHUN.match(w["text"]).group(1)))
+                     for w in tahun]
+            return _Header(i, kolom, min(w["x0"] for w in tahun) - 25,
+                           max(w["x1"] for w in tahun) + 30)
     return None
 
 
-_CATATAN_KAKI = re.compile(r"^Catatan atas laporan keuangan", re.IGNORECASE)
+def _cari_header(baris: list[list[dict]]) -> _Header | None:
+    """Temukan header tabel: kata ``Catatan`` dan tahun-tahun kolom di sekitarnya."""
+    for i, b in enumerate(baris):
+        catatan = next((w for w in b if w["text"].lower().rstrip("/").startswith("catatan")), None)
+        if catatan is None:
+            continue
+        jendela = [j for j in range(max(0, i - 3), min(len(baris), i + 3))
+                   if -22 <= baris[j][0]["top"] - catatan["top"] <= 15]
+        tahun: list[tuple[int, dict]] = []
+        for j in jendela:
+            for w in baris[j]:
+                m = _TAHUN.match(w["text"])
+                if m and w is not catatan:
+                    tahun.append((j, w))
+        if not tahun:
+            continue
+        # gabungkan tahun yang bertumpuk (``2024/`` di atas ``2024``) menjadi satu kolom
+        kelompok: list[list[dict]] = []
+        for _, w in sorted(tahun, key=lambda t: _tengah(t[1])):
+            if kelompok and abs(_tengah(kelompok[-1][-1]) - _tengah(w)) <= 25:
+                kelompok[-1].append(w)
+            else:
+                kelompok.append([w])
+        kolom = [_Kolom("tahun", sum(_tengah(w) for w in g) / len(g),
+                        int(_TAHUN.match(g[0]["text"]).group(1))) for g in kelompok]
+        kolom.append(_Kolom("catatan", _tengah(catatan)))
+        kolom.sort(key=lambda k: k.tengah)
+        if kolom[0].jenis == "catatan":
+            batas_label = catatan["x0"] - 10
+        else:
+            batas_label = min(w["x0"] for w in kelompok[0]) - 25
+        batas_kanan = max(w["x1"] for g in kelompok for w in g) + 30
+        indeks = max(j for j, _ in tahun)
+        indeks = max(indeks, max(j for j in jendela if any(
+            w["text"].lower().startswith("notes") for w in baris[j])) if any(
+            w["text"].lower().startswith("notes") for j in jendela for w in baris[j]) else indeks)
+        return _Header(max(indeks, i), kolom, batas_label, batas_kanan)
+    return _header_tanpa_catatan(baris)
 
 
 def _kapital_semua(teks: str) -> bool:
@@ -134,32 +272,58 @@ def _kapital_semua(teks: str) -> bool:
     return bool(huruf) and all(c.isupper() for c in huruf)
 
 
-def _skala_baris(label: str, skala_halaman: int) -> int:
-    """Pos bertanda ``(nilai penuh)``, misalnya laba per saham, tidak ikut satuan halaman."""
-    return 0 if re.search(r"\(nilai penuh\)", label, re.IGNORECASE) else skala_halaman
+_PER_SAHAM = re.compile(r"\bper\s+(saham|share|ads)\b", re.IGNORECASE)
+
+
+def _skala_baris(label: str, induk: str, skala_halaman: int) -> int:
+    """Pos per saham (laba per saham) disajikan dalam satuan penuh, bukan satuan halaman.
+
+    Keterangan ``(nilai penuh)`` bisa ada di label (BBCA, UNVR) atau di judul
+    induknya (TLKM, BBRI). Pos yang menyebut nilai nominal per saham (modal
+    saham) tetap memakai satuan halaman.
+    """
+    teks = f"{label} {induk}"
+    if _PER_SAHAM.search(teks) and "nominal" not in teks.lower():
+        return 0
+    return skala_halaman
 
 
 def _lanjutan(teks: str, sebelumnya: str, rapat: bool) -> bool:
     """Apakah baris label ``teks`` melanjutkan label ``sebelumnya``."""
     if not teks or not rapat:
         return False
-    if teks[0].islower() or teks[0].isdigit() or teks[0] in "(-" or teks.startswith("Rp "):
+    if sebelumnya.count("(") > sebelumnya.count(")"):
+        return True  # kurung belum ditutup: "(dalam" / "Rupiah penuh)"
+    if teks[0].islower() or teks[0].isdigit() or teks[0] == "(" or teks.startswith("Rp "):
         return True
     return _kapital_semua(teks) and _kapital_semua(sebelumnya)
 
 
 def ekstrak_halaman(kata: list[dict], halaman: int, teks_halaman: str = "") -> list[Baris]:
     """Ekstrak baris tabel dari daftar kata satu halaman (format ``pdfplumber``)."""
+    if not kata:
+        return []
     semua = _kelompokkan_baris(kata)
     header = _cari_header(semua)
     if header is None:
         return []
-    idx, kata_catatan, kolom = header
     skala = deteksi_skala(teks_halaman)
+    mata_uang = deteksi_mata_uang(teks_halaman)
+    judul_atas = " ".join(w["text"] for b in semua[:header.indeks] for w in b)
+    laporan = jenis_laporan(judul_atas)
     tinggi = sorted(w["bottom"] - w["top"] for w in kata)[len(kata) // 2]
     jarak_rapat = tinggi * 1.5  # lebih jauh dari ini berarti ada baris kosong
-    batas_label = kata_catatan["x0"] - 15
-    batas_nilai = (kata_catatan["x1"] + min(k.tengah for k in kolom) - 20) / 2
+    kolom_tahun = [k for k in header.kolom if k.jenis == "tahun"]
+
+    def dalam_tabel(w: dict) -> bool:
+        return header.batas_label <= _tengah(w) < header.batas_kanan
+
+    def kolom_dari(w: dict) -> _Kolom:
+        return min(header.kolom, key=lambda k: abs(k.tengah - _tengah(w)))
+
+    badan = semua[header.indeks + 1:]
+    ribuan = deteksi_format([w["text"] for b in badan for w in b
+                             if dalam_tabel(w) and kolom_dari(w).jenis == "tahun"])
 
     hasil: list[Baris] = []
     tunda = _Tunda()
@@ -174,17 +338,27 @@ def ekstrak_halaman(kata: list[dict], halaman: int, teks_halaman: str = "") -> l
         if tunda.label:
             x0, label = tunda.x0 or 0.0, " ".join(tunda.label)
             hasil.append(Baris(halaman, len(hasil), label, "".join(tunda.catatan), "judul",
-                               induk=induk_untuk(x0), skala=skala, y=tunda.y, indentasi=x0))
+                               induk=induk_untuk(x0), laporan=laporan, skala=skala,
+                               mata_uang=mata_uang, y=tunda.y, indentasi=x0))
             judul_aktif.append((x0, label))
 
-    for b in semua[idx + 1:]:
-        if _CATATAN_KAKI.match(" ".join(w["text"] for w in b)):
+    for b in badan:
+        if _CATATAN_KAKI.search(" ".join(w["text"] for w in b)):
             break
-        label = [w for w in b if (w["x0"] + w["x1"]) / 2 < batas_label]
-        catatan = [w["text"] for w in b if batas_label <= (w["x0"] + w["x1"]) / 2 < batas_nilai
-                   and _CATATAN.match(w["text"])]
-        nilai = [w for w in b if (w["x0"] + w["x1"]) / 2 >= batas_nilai
-                 and parse_angka_id(w["text"]) is not None]
+        label = [w for w in b if _tengah(w) < header.batas_label]
+        catatan, nilai = [], []
+        for w in b:
+            if not dalam_tabel(w):
+                continue
+            kol = kolom_dari(w)
+            if kol.jenis == "catatan" and _CATATAN.match(w["text"]):
+                catatan.append(w["text"])
+            elif kol.jenis == "tahun" and parse_angka_id(w["text"], ribuan) is not None:
+                nilai.append((kol, w))
+
+        butir = bool(label) and label[0]["text"] in ("-", "–", "•") and len(label) > 1
+        if butir:
+            label = label[1:]
         teks_label = " ".join(w["text"] for w in label)
 
         if not label and not nilai:
@@ -192,7 +366,7 @@ def ekstrak_halaman(kata: list[dict], halaman: int, teks_halaman: str = "") -> l
             continue
         if label:
             rapat = label[0]["top"] - tunda.y_terakhir <= jarak_rapat
-            if tunda.label and not _lanjutan(teks_label, tunda.label[-1], rapat):
+            if tunda.label and (butir or not _lanjutan(teks_label, tunda.label[-1], rapat)):
                 simpan_judul()
                 tunda = _Tunda()
             if not tunda.label:
@@ -202,35 +376,69 @@ def ekstrak_halaman(kata: list[dict], halaman: int, teks_halaman: str = "") -> l
         tunda.catatan.extend(catatan_lepas + catatan)
         catatan_lepas = []
 
-        if nilai and tunda.label:
+        if nilai:
             urut = len(hasil)
-            induk = induk_untuk(tunda.x0 or 0.0)
+            indentasi = tunda.x0 if tunda.x0 is not None else (judul_aktif[-1][0] + 1
+                                                               if judul_aktif else 0.0)
+            induk = induk_untuk(indentasi)
             label_lengkap = " ".join(tunda.label)
-            skala_pos = _skala_baris(label_lengkap, skala)
-            for w in nilai:
-                tengah = (w["x0"] + w["x1"]) / 2
-                kol = min(kolom, key=lambda k: abs(k.tengah - tengah))
+            skala_pos = _skala_baris(label_lengkap, induk, skala)
+            for kol, w in nilai:
+                angka = parse_angka_id(w["text"], ribuan)
                 hasil.append(Baris(
                     halaman=halaman, urutan=urut, label=label_lengkap,
-                    catatan="".join(tunda.catatan), jenis="nilai", induk=induk, tahun=kol.tahun,
-                    nilai=format(parse_angka_id(w["text"]).scaleb(skala_pos).normalize(), "f"),
-                    teks_nilai=w["text"], skala=skala_pos, y=w["top"],
-                    indentasi=tunda.x0 or 0.0,
+                    catatan="".join(tunda.catatan), jenis="nilai", induk=induk, laporan=laporan,
+                    tahun=kol.tahun, nilai=format(angka.scaleb(skala_pos).normalize(), "f"),
+                    teks_nilai=w["text"], skala=skala_pos, mata_uang=mata_uang, y=w["top"],
+                    indentasi=indentasi,
                 ))
             tunda = _Tunda()
     simpan_judul()
+    if not kolom_tahun:
+        return []
     return hasil
 
 
-def ekstrak_pdf(path: Path, halaman: list[int]) -> list[Baris]:
+def _baca_halaman(page) -> tuple[list[dict], str]:
+    return page.extract_words(x_tolerance=1.5), page.extract_text() or ""
+
+
+def cari_halaman(path: Path, maks: int = 60) -> list[tuple[int, str]]:
+    """Cari halaman neraca, laba rugi, dan arus kas di ``maks`` halaman pertama.
+
+    Halaman dipilih bila punya header tabel (``Catatan`` + tahun) dan judulnya
+    menyebut salah satu laporan utama. Laporan perubahan ekuitas dan halaman
+    catatan atas laporan keuangan dilewati.
+    """
+    import pdfplumber
+
+    hasil: list[tuple[int, str]] = []
+    with pdfplumber.open(path) as pdf:
+        for nomor, page in enumerate(pdf.pages[:maks], start=1):
+            kata, _ = _baca_halaman(page)
+            if not kata:
+                continue
+            semua = _kelompokkan_baris(kata)
+            header = _cari_header(semua)
+            if header is None:
+                continue
+            judul = " ".join(w["text"] for b in semua[:header.indeks] for w in b)
+            jenis = jenis_laporan(judul)
+            if jenis and jenis != "perubahan_ekuitas" and not _HALAMAN_CATATAN.search(judul):
+                hasil.append((nomor, jenis))
+    return hasil
+
+
+def ekstrak_pdf(path: Path, halaman: list[int] | None = None) -> list[Baris]:
     import pdfplumber  # impor di sini agar modul tetap bisa diuji tanpa PDF
 
+    if halaman is None:
+        halaman = [n for n, _ in cari_halaman(path)]
     hasil: list[Baris] = []
     with pdfplumber.open(path) as pdf:
         for nomor in halaman:
-            page = pdf.pages[nomor - 1]
-            kata = page.extract_words(x_tolerance=1.5)
-            hasil.extend(ekstrak_halaman(kata, nomor, page.extract_text() or ""))
+            kata, teks = _baca_halaman(pdf.pages[nomor - 1])
+            hasil.extend(ekstrak_halaman(kata, nomor, teks))
     return hasil
 
 
@@ -253,17 +461,28 @@ def tulis_csv(path: Path, baris: list[Baris]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("pdf", type=Path, help="file PDF laporan keuangan")
-    parser.add_argument("--halaman", required=True, help="halaman yang dibaca, misalnya 8-11,14-15")
-    parser.add_argument("--out", type=Path, help="file CSV keluaran (bawaan: data/processed/pdf_<nama>.csv)")
+    parser.add_argument("pdf", type=Path, nargs="+", help="file PDF laporan keuangan")
+    parser.add_argument("--halaman", help="halaman yang dibaca, misalnya 8-11,14-15 "
+                                          "(bawaan: dicari otomatis)")
+    parser.add_argument("--out", type=Path, help="file CSV keluaran, hanya untuk satu PDF "
+                                                 "(bawaan: data/processed/pdf_<nama>.csv)")
     args = parser.parse_args(argv)
+    if args.out and len(args.pdf) > 1:
+        parser.error("--out hanya bisa dipakai untuk satu PDF")
 
-    baris = ekstrak_pdf(args.pdf, parse_rentang(args.halaman))
-    out = args.out or Path("data/processed") / f"pdf_{args.pdf.stem}.csv"
-    tulis_csv(out, baris)
-    nilai = [b for b in baris if b.jenis == "nilai"]
-    print(f"{len({(b.halaman, b.urutan) for b in nilai})} baris bernilai, {len(nilai)} angka, "
-          f"{sum(b.jenis == 'judul' for b in baris)} judul -> {out}")
+    for path in args.pdf:
+        halaman = parse_rentang(args.halaman) if args.halaman else None
+        if halaman is None:
+            temuan = cari_halaman(path)
+            halaman = [n for n, _ in temuan]
+            ringkas = ", ".join(f"{n}:{j}" for n, j in temuan)
+            print(f"{path.name}: halaman ditemukan {ringkas or '-'}")
+        baris = ekstrak_pdf(path, halaman)
+        out = args.out or Path("data/processed") / f"pdf_{path.stem}.csv"
+        tulis_csv(out, baris)
+        nilai = [b for b in baris if b.jenis == "nilai"]
+        print(f"  {len({(b.halaman, b.urutan) for b in nilai})} baris bernilai, {len(nilai)} angka, "
+              f"{sum(b.jenis == 'judul' for b in baris)} judul -> {out}")
     return 0
 
 

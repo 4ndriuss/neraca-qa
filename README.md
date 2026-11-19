@@ -275,42 +275,80 @@ Tiga ketidakcocokan saldo awal ekuitas (BBRI 2022, BBRI 2023, BMRI 2023) berasal
 
 Tabel laporan keuangan dibaca dari posisi setiap kata di halaman (`pdfplumber`), bukan dari teks per baris. Teks per baris mencampur kolom nomor catatan dengan angka: `Kas 40,43 29.315.878 21.701.514`.
 
+Taruh PDF laporan keuangan audit di `data/raw/` dengan nama `KODE_TAHUN_lk.pdf` (misalnya `BBCA_2024_lk.pdf`), lalu jalankan:
+
 ```bash
-.venv/Scripts/neraca-pdf data/raw/BBCA_2024_lk.pdf --halaman 8-11,14-15
-.venv/Scripts/neraca-cocok data/processed/pdf_BBCA_2024_lk.csv --emiten BBCA --tahun 2024
+.venv/Scripts/neraca-pdf data/raw/*_lk.pdf
+.venv/Scripts/neraca-cocok data/processed/pdf_*_lk.csv
 ```
 
-Perintah pertama menghasilkan satu baris per angka: halaman, label, induk (judul bagian di atasnya), nomor catatan, tahun kolom, dan nilai dalam satuan penuh. Perintah kedua mencocokkannya ke kunci jawaban XBRL.
+Perintah pertama mencari sendiri halaman neraca, laba rugi, dan arus kas, lalu menghasilkan satu baris per angka: halaman, jenis laporan, label, induk (judul bagian di atasnya), nomor catatan, tahun kolom, mata uang, dan nilai dalam satuan penuh. Halaman tertentu bisa dipilih dengan `--halaman 8-11,14-15`. Perintah kedua mencocokkan hasilnya ke kunci jawaban XBRL; kode emiten dan tahun dibaca dari nama file.
 
-### Hasil: BBCA 2024 (neraca, laba rugi, arus kas)
+Gunakan PDF laporan keuangan **audit** yang disusun perusahaan, bukan `FinancialStatement-…-Tahunan-KODE.pdf` dari IDX. File IDX itu adalah cetakan data XBRL, sehingga mengujinya sama saja dengan memeriksa kunci jawaban dengan dirinya sendiri.
 
-| Status | Jumlah | Arti |
-|---|---|---|
-| Persis | 166 (63,4%) | Nilai sama dengan satu fakta XBRL |
-| Tanda terbalik | 16 (6,1%) | PDF menulis beban dalam kurung, XBRL menyimpannya positif |
-| Turunan | 35 (13,4%) | Sama dengan kombinasi 2–3 fakta, misalnya bruto − cadangan kerugian, atau giro + tabungan + deposito |
-| Gabungan | 36 (13,7%) | 2–4 baris PDF berurutan dijumlah menjadi satu fakta XBRL |
-| **Terverifikasi** | **253 (96,6%)** | |
-| Tidak cocok | 9 (3,4%) | Tidak bisa dicek dengan XBRL (lihat di bawah) |
+### Hasil: 11 emiten, laporan tahunan 2024
 
-Per halaman: neraca 98/98, laba rugi 59/66, arus kas 96/98.
+| Emiten | Angka | Cocok XBRL | Konsisten internal | **Terverifikasi** | Tanpa kunci | Tidak cocok |
+|---|---|---|---|---|---|---|
+| ADRO | 308 | 94,8% | 2,3% | **97,1%** | – | 2,9% |
+| ASII | 293 | 99,7% | – | **99,7%** | – | 0,3% |
+| BBCA | 274 | 93,8% | 6,2% | **100,0%** | – | – |
+| BBRI | 416 | 64,4% | 15,1% | **79,6%** | 7,9% | 12,5% |
+| BMRI | 506 | 84,6% | 9,9% | **94,5%** | – | 5,5% |
+| BRIS | 378 | 79,9% | 10,6% | **90,5%** | – | 9,5% |
+| GOTO | 282 | 93,6% | 0,7% | **94,3%** | – | 5,7% |
+| ICBP | 209 | 99,0% | – | **99,0%** | – | 1,0% |
+| MYOR | 204 | 98,0% | 1,0% | **99,0%** | – | 1,0% |
+| TLKM | 232 | 98,3% | 0,9% | **99,1%** | – | 0,9% |
+| UNVR | 165 | 98,2% | – | **98,2%** | – | 1,8% |
+| **Total** | **3.267** | **88,8%** | **5,6%** | **94,4%** | 1,0% | 4,6% |
 
-Kesembilan angka yang tidak cocok semuanya sama dengan teks PDF-nya; penyebabnya ada di sisi XBRL:
+PTBA belum diuji karena file yang terunduh baru surat pengantarnya.
 
-- **Pendapatan operasional lainnya (6 angka):** XBRL mengelompokkan ulang pos-pos ini (dividen dipisah), sehingga tidak ada kombinasi yang sama persis.
-- **Penempatan yang termasuk kas dan setara kas (2 angka):** rincian di bawah arus kas ini tidak ditandai di XBRL.
-- **Pendapatan syariah 2023 (1 angka):** halaman catatan XBRL (`4631100.html`) masih memuat angka 2023 sebelum restatement (Rp 855.189 juta), sedangkan PDF dan laba rugi XBRL memakai angka yang disajikan kembali (Rp 663.932 juta). Selisihnya Rp 191.257 juta, sama dengan selisih restatement pendapatan bunga BBCA 2023. Jadi PDF-nya benar dan catatan XBRL-nya tidak diperbarui.
+Arti status:
 
-Batasan: pencocokan memeriksa **nilai**, bukan apakah label PDF sesuai dengan nama pos XBRL. Status turunan dan gabungan juga bisa kebetulan cocok, terutama untuk angka kecil. Laporan perubahan ekuitas (hal. 12–13) belum didukung karena berbentuk lanskap dengan belasan kolom.
+| Status | Arti |
+|---|---|
+| Cocok XBRL | Sama persis, sama dengan tanda terbalik (beban dalam kurung), turunan dari 2–3 fakta (misalnya bruto − cadangan, atau giro + tabungan + deposito), atau gabungan 2–4 baris PDF berurutan yang menjadi satu fakta |
+| Konsisten internal | Tidak ada di XBRL, tetapi subtotal PDF (`Jumlah`, `Total`, `Bersih`, atau baris tanpa label) sama dengan jumlah baris tepat di atasnya. Subtotal dan penyusunnya diberi status ini, karena satu angka yang salah baca akan membuat penjumlahannya meleset |
+| Tanpa kunci | XBRL hampir tidak punya data untuk tahun kolom itu (kolom 2022 di neraca tiga kolom BBRI hanya punya 4 fakta) |
+| Tidak cocok | Belum terverifikasi; perlu diperiksa manual |
+
+Angka yang tidak cocok sudah diperiksa per emiten. Yang tersisa hampir semuanya keterbatasan XBRL, bukan salah baca:
+
+- **XBRL bank jauh lebih tipis daripada PDF.** BRIS dan BMRI hanya punya sekitar 90–110 fakta neraca per tahun, sedangkan PDF-nya memuat rincian per pihak dan subtotal bertingkat (`Jumlah simpanan wadiah`, `Jumlah giro, tabungan dan deposito mudharabah`).
+- **XBRL BBRI tidak sama dengan PDF audit-nya.** Angka 2023 di XBRL BBRI 2024 identik dengan XBRL BBRI 2023, padahal PDF memakai angka 2023 yang disajikan kembali (`2023*)`). Arus kas 2024 juga berbeda: kas neto dari operasi Rp 24.283.108 juta di PDF vs Rp 24.100.898 juta di XBRL. Keduanya konsisten secara internal, jadi kemungkinan XBRL dibuat dari versi laporan yang berbeda.
+- **XBRL BBCA tidak konsisten di dalam dirinya sendiri.** Halaman catatan (`4631100.html`) masih memuat pendapatan syariah 2023 sebelum restatement (Rp 855.189 juta), sedangkan laba ruginya memakai angka yang disajikan kembali (Rp 663.932 juta).
+- **Beberapa pos tidak ditandai atau dikelompokkan ulang**, misalnya laba usaha (MYOR, ICBP, ADRO), EBITDA (UNVR), laba per ADS (TLKM), dan rincian arus kas operasi GOTO.
+
+Batasan: pencocokan memeriksa **nilai**, bukan apakah label PDF sesuai dengan nama pos XBRL. Status turunan, gabungan, dan konsisten internal bisa kebetulan cocok, terutama untuk angka kecil. Laporan perubahan ekuitas belum didukung karena berbentuk lanskap dengan belasan kolom.
 
 ### Pelajaran dari PDF
 
+Tata letak yang ditemui di 11 PDF:
+
+| Variasi | Emiten | Penanganan |
+|---|---|---|
+| Dwibahasa, label Inggris di kanan | Semua kecuali BBCA dan TLKM | Kata di kanan kolom tahun terakhir diabaikan |
+| Koma sebagai pemisah ribuan | ADRO, ASII, BRIS, GOTO, UNVR | Format dideteksi per halaman |
+| Header dua baris (`Catatan/` + `Notes 2024 2023`) | Laporan dwibahasa | Tahun dicari di sekitar kata `Catatan` |
+| Catatan di antara kolom tahun | MYOR | Kolom ditentukan dari posisi header, bukan diasumsikan |
+| Angka terpotong jadi dua kata (`4` + `02.141.744.744`, `(` + `34.270…)`) | MYOR, BMRI | Kata bersentuhan disambung |
+| Tiga kolom tahun (`2024 2023*) 2022*)`) | BBRI | Tanda setelah tahun diabaikan |
+| Tanpa kolom catatan | Arus kas ASII | Header cadangan: baris yang isinya hanya tahun |
+| Satuan penuh, ribuan, jutaan, miliaran | MYOR, ADRO, mayoritas, TLKM/ASII | Dibaca dari keterangan satuan per halaman |
+| Butir `- Pihak ketiga` | ASII, GOTO, UNVR | Butir selalu memulai pos baru |
+
+Pelajaran lain:
+
 - **Kolom catatan terpotong ke baris di atas labelnya.** `2b,2g,4,37,` ada di atas baris Kas, dan `40,43` sebaris dengan Kas.
-- **Jarak vertikal lebih andal daripada huruf kapital.** Label yang terpotong berjarak sekitar 8,5 pt, sedangkan antarpos ada baris kosong (sekitar 17 pt). Dengan petunjuk ini, judul seperti `LABA BERSIH YANG DAPAT DIATRIBUSIKAN` / `KEPADA:` bisa digabung tanpa ikut menggabungkan `LIABILITAS` di bawah `LIABILITAS, DANA SYIRKAH TEMPORER, DAN EKUITAS`.
+- **Jarak vertikal lebih andal daripada huruf kapital.** Label yang terpotong berjarak rapat, sedangkan antarpos ada baris kosong. Dengan petunjuk ini, judul seperti `LABA BERSIH YANG DAPAT DIATRIBUSIKAN` / `KEPADA:` bisa digabung tanpa ikut menggabungkan `LIABILITAS` di bawah `LIABILITAS, DANA SYIRKAH TEMPORER, DAN EKUITAS`. Kurung yang belum ditutup juga menandakan baris lanjutan (`(dalam` / `Rupiah penuh)`).
 - **Angka di dalam label bukan nilai**, misalnya `sebesar Rp 638 pada tanggal 31 Desember 2024`.
-- **Satuan bisa berbeda per baris.** Halaman bersatuan jutaan, tetapi laba per saham bertanda `(nilai penuh)`.
+- **Laba per saham selalu dalam satuan penuh**, meskipun halamannya bersatuan jutaan atau miliaran. Keterangannya bisa ada di label (BBCA) atau di judul induknya (TLKM). Pos yang menyebut nilai nominal per saham (modal saham UNVR) tetap memakai satuan halaman.
+- **Kurung negatif bisa terpisah dari angkanya.** Tanpa penanganan, beban MYOR dan BMRI terbaca sebagai pendapatan.
 - **Kolom 2024 tidak selalu berarti 31 Desember 2024.** `KAS DAN SETARA KAS, AWAL TAHUN` di kolom 2024 adalah saldo 31 Desember 2023.
 - **XBRL menyimpan komponen, PDF menampilkan totalnya**, dan sebaliknya. Karena itu kunci jawaban perlu pencocokan turunan dan gabungan, bukan hanya pencocokan persis.
+- **Satu emiten tidak cukup untuk menguji ekstraktor.** Di BBCA saja hasilnya 96,6%, tetapi di awal pengujian 11 emiten ada yang hanya 1,3% (TLKM, karena satuan miliaran tidak terdeteksi) dan 48% (MYOR).
 
 ## Struktur folder
 
