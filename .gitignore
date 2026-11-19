@@ -1,0 +1,11 @@
+# Data mentah (PDF laporan keuangan) tidak di-commit karena ukurannya besar.
+# Struktur folder tetap tersimpan lewat .gitkeep.
+data/raw/*
+!data/raw/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
