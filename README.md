@@ -18,6 +18,7 @@
 - [Rencana pengerjaan](#rencana-pengerjaan)
 - [Stack](#stack)
 - [Data XBRL: kunci jawaban](#data-xbrl-kunci-jawaban)
+- [Ekstraksi tabel PDF](#ekstraksi-tabel-pdf)
 - [Struktur folder](#struktur-folder)
 
 ---
@@ -213,15 +214,26 @@ Angka resmi dari file XBRL IDX dipakai sebagai kunci jawaban untuk mengukur akur
 | PTBA | Tambang | Penulisan nama tidak konsisten |
 | GOTO | Teknologi | Angka rugi, penurunan nilai goodwill |
 
+### Persiapan
+
+Proyek ini memakai virtual environment khusus di `.venv/` (Python 3.10+), jadi tidak ada pustaka yang terpasang global.
+
+```bash
+python -m venv .venv
+.venv/Scripts/python -m pip install -e .
+```
+
+Di macOS/Linux, ganti `.venv/Scripts/python` dengan `.venv/bin/python`. Perintah kedua memasang dependensi dari `pyproject.toml` dan proyek ini sendiri dalam mode *editable*, sehingga perubahan kode langsung berlaku.
+
 ### Menjalankan parser
 
 Taruh zip XBRL dari IDX di `data/raw/` dengan nama `KODE_TAHUN_xbrl.zip` (misalnya `BBCA_2024_xbrl.zip`), lalu jalankan:
 
 ```bash
-PYTHONPATH=src python -m neraca.ingest.xbrl
+.venv/Scripts/neraca-xbrl
 ```
 
-Parser hanya memakai pustaka standar Python (3.10+). Hasilnya ditulis ke `data/processed/`:
+Parser XBRL hanya memakai pustaka standar Python. Hasilnya ditulis ke `data/processed/`:
 
 | File | Isi |
 |---|---|
@@ -235,7 +247,7 @@ Nilai disimpan dalam satuan penuh (Rupiah atau Dolar), bukan jutaan. Satu angka 
 Tes unit:
 
 ```bash
-python -m unittest discover -s tests
+.venv/Scripts/python -m unittest discover -s tests
 ```
 
 ### Pemeriksaan konsistensi
@@ -259,24 +271,69 @@ Tiga ketidakcocokan saldo awal ekuitas (BBRI 2022, BBRI 2023, BMRI 2023) berasal
 - **Kode saham lebih andal daripada nama.** ADRO berganti nama, dan nama PTBA ditulis tiga cara berbeda dalam empat tahun.
 - **XBRL juga bisa salah tag.** Dua arus kas BBRI 2024 tampak tertukar di laporan 2025, dan kolom 2022 di laporan ekuitas BMRI 2023 mencatat −Rp 16,8 T sebagai "penerapan awal standar akuntansi" tanpa baris dividen.
 
+## Ekstraksi tabel PDF
+
+Tabel laporan keuangan dibaca dari posisi setiap kata di halaman (`pdfplumber`), bukan dari teks per baris. Teks per baris mencampur kolom nomor catatan dengan angka: `Kas 40,43 29.315.878 21.701.514`.
+
+```bash
+.venv/Scripts/neraca-pdf data/raw/BBCA_2024_lk.pdf --halaman 8-11,14-15
+.venv/Scripts/neraca-cocok data/processed/pdf_BBCA_2024_lk.csv --emiten BBCA --tahun 2024
+```
+
+Perintah pertama menghasilkan satu baris per angka: halaman, label, induk (judul bagian di atasnya), nomor catatan, tahun kolom, dan nilai dalam satuan penuh. Perintah kedua mencocokkannya ke kunci jawaban XBRL.
+
+### Hasil: BBCA 2024 (neraca, laba rugi, arus kas)
+
+| Status | Jumlah | Arti |
+|---|---|---|
+| Persis | 166 (63,4%) | Nilai sama dengan satu fakta XBRL |
+| Tanda terbalik | 16 (6,1%) | PDF menulis beban dalam kurung, XBRL menyimpannya positif |
+| Turunan | 35 (13,4%) | Sama dengan kombinasi 2–3 fakta, misalnya bruto − cadangan kerugian, atau giro + tabungan + deposito |
+| Gabungan | 36 (13,7%) | 2–4 baris PDF berurutan dijumlah menjadi satu fakta XBRL |
+| **Terverifikasi** | **253 (96,6%)** | |
+| Tidak cocok | 9 (3,4%) | Tidak bisa dicek dengan XBRL (lihat di bawah) |
+
+Per halaman: neraca 98/98, laba rugi 59/66, arus kas 96/98.
+
+Kesembilan angka yang tidak cocok semuanya sama dengan teks PDF-nya; penyebabnya ada di sisi XBRL:
+
+- **Pendapatan operasional lainnya (6 angka):** XBRL mengelompokkan ulang pos-pos ini (dividen dipisah), sehingga tidak ada kombinasi yang sama persis.
+- **Penempatan yang termasuk kas dan setara kas (2 angka):** rincian di bawah arus kas ini tidak ditandai di XBRL.
+- **Pendapatan syariah 2023 (1 angka):** halaman catatan XBRL (`4631100.html`) masih memuat angka 2023 sebelum restatement (Rp 855.189 juta), sedangkan PDF dan laba rugi XBRL memakai angka yang disajikan kembali (Rp 663.932 juta). Selisihnya Rp 191.257 juta, sama dengan selisih restatement pendapatan bunga BBCA 2023. Jadi PDF-nya benar dan catatan XBRL-nya tidak diperbarui.
+
+Batasan: pencocokan memeriksa **nilai**, bukan apakah label PDF sesuai dengan nama pos XBRL. Status turunan dan gabungan juga bisa kebetulan cocok, terutama untuk angka kecil. Laporan perubahan ekuitas (hal. 12–13) belum didukung karena berbentuk lanskap dengan belasan kolom.
+
+### Pelajaran dari PDF
+
+- **Kolom catatan terpotong ke baris di atas labelnya.** `2b,2g,4,37,` ada di atas baris Kas, dan `40,43` sebaris dengan Kas.
+- **Jarak vertikal lebih andal daripada huruf kapital.** Label yang terpotong berjarak sekitar 8,5 pt, sedangkan antarpos ada baris kosong (sekitar 17 pt). Dengan petunjuk ini, judul seperti `LABA BERSIH YANG DAPAT DIATRIBUSIKAN` / `KEPADA:` bisa digabung tanpa ikut menggabungkan `LIABILITAS` di bawah `LIABILITAS, DANA SYIRKAH TEMPORER, DAN EKUITAS`.
+- **Angka di dalam label bukan nilai**, misalnya `sebesar Rp 638 pada tanggal 31 Desember 2024`.
+- **Satuan bisa berbeda per baris.** Halaman bersatuan jutaan, tetapi laba per saham bertanda `(nilai penuh)`.
+- **Kolom 2024 tidak selalu berarti 31 Desember 2024.** `KAS DAN SETARA KAS, AWAL TAHUN` di kolom 2024 adalah saldo 31 Desember 2023.
+- **XBRL menyimpan komponen, PDF menampilkan totalnya**, dan sebaliknya. Karena itu kunci jawaban perlu pencocokan turunan dan gabungan, bukan hanya pencocokan persis.
+
 ## Struktur folder
 
 ```
 neraca-qa/
 ├── data/
-│   ├── raw/            # zip XBRL dan PDF asli dari IDX (tidak di-commit)
-│   └── processed/      # hasil olahan, bisa dibuat ulang (tidak di-commit)
+│   ├── raw/                  # zip XBRL dan PDF asli dari IDX (tidak di-commit)
+│   └── processed/            # hasil olahan, bisa dibuat ulang (tidak di-commit)
 ├── src/neraca/
 │   ├── ingest/
-│   │   └── xbrl.py     # parser XBRL IDX → CSV kunci jawaban
-│   ├── extract/        # (rencana) ekstraksi dan normalisasi tabel PDF
-│   ├── retrieval/      # (rencana) hybrid search dan reranking
-│   ├── tools/          # (rencana) SQL dan fungsi kalkulator
-│   └── answer/         # (rencana) router dan penyusunan jawaban
+│   │   └── xbrl.py           # parser XBRL IDX → CSV kunci jawaban
+│   ├── extract/
+│   │   └── pdf_tabel.py      # ekstraksi tabel PDF dari posisi kata
+│   ├── evaluasi/
+│   │   └── pdf_vs_xbrl.py    # akurasi ekstraksi PDF terhadap XBRL
+│   ├── retrieval/            # (rencana) hybrid search dan reranking
+│   ├── tools/                # (rencana) SQL dan fungsi kalkulator
+│   └── answer/               # (rencana) router dan penyusunan jawaban
 ├── tests/
-│   └── test_xbrl.py    # tes parser XBRL
-├── eval/               # (rencana) set pertanyaan uji dan skrip evaluasi
-├── app/                # (rencana) demo Streamlit
+│   ├── test_xbrl.py          # tes parser XBRL
+│   └── test_pdf_tabel.py     # tes ekstraktor PDF dan pencocokan
+├── eval/                     # (rencana) set pertanyaan uji
+├── app/                      # (rencana) demo Streamlit
 ├── pyproject.toml
 └── README.md
 ```

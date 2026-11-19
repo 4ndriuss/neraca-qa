@@ -8,10 +8,14 @@ version = "0.1.0"
 description = "Tanya-jawab laporan keuangan emiten BEI dengan perhitungan terverifikasi dan sitasi halaman."
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "pdfplumber>=0.11",
+]
 
 [project.scripts]
 neraca-xbrl = "neraca.ingest.xbrl:main"
+neraca-pdf = "neraca.extract.pdf_tabel:main"
+neraca-cocok = "neraca.evaluasi.pdf_vs_xbrl:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
