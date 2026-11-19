@@ -17,7 +17,8 @@
 - [Masalah sulit yang perlu ditangani](#masalah-sulit-yang-perlu-ditangani)
 - [Rencana pengerjaan](#rencana-pengerjaan)
 - [Stack](#stack)
-- [Struktur folder (rencana)](#struktur-folder-rencana)
+- [Data XBRL: kunci jawaban](#data-xbrl-kunci-jawaban)
+- [Struktur folder](#struktur-folder)
 
 ---
 
@@ -191,22 +192,91 @@ Masalah lain yang perlu dicatat keputusannya:
 - **Model embedding multilingual** (misalnya bge-m3) untuk pencarian teks
 - **Streamlit** untuk demo
 
-## Struktur folder (rencana)
+## Data XBRL: kunci jawaban
+
+Angka resmi dari file XBRL IDX dipakai sebagai kunci jawaban untuk mengukur akurasi ekstraksi PDF.
+
+### Cakupan
+
+12 emiten × 4 tahun (2022–2025), semuanya laporan tahunan yang diaudit.
+
+| Emiten | Sektor | Kasus khusus yang diuji |
+|---|---|---|
+| BBCA, BBRI, BMRI | Bank konvensional | Restatement, tag tertukar |
+| BRIS | Bank syariah | Tanpa pendapatan bunga, dana syirkah temporer |
+| UNVR | Consumer | Operasi yang dihentikan |
+| ICBP | Consumer | Kepentingan nonpengendali besar |
+| MYOR | Consumer | Angka dalam satuan penuh |
+| TLKM | Telekomunikasi | Angka dalam miliaran, tanpa laba kotor |
+| ASII | Konglomerat | Kepentingan nonpengendali sangat besar |
+| ADRO | Tambang | Dolar AS, ganti nama, pelepasan bisnis |
+| PTBA | Tambang | Penulisan nama tidak konsisten |
+| GOTO | Teknologi | Angka rugi, penurunan nilai goodwill |
+
+### Menjalankan parser
+
+Taruh zip XBRL dari IDX di `data/raw/` dengan nama `KODE_TAHUN_xbrl.zip` (misalnya `BBCA_2024_xbrl.zip`), lalu jalankan:
+
+```bash
+PYTHONPATH=src python -m neraca.ingest.xbrl
+```
+
+Parser hanya memakai pustaka standar Python (3.10+). Hasilnya ditulis ke `data/processed/`:
+
+| File | Isi |
+|---|---|
+| `xbrl_fakta.csv` | Satu baris per angka: emiten, tahun laporan, pos, nilai penuh, mata uang, tahun periode, dimensi, file sumber |
+| `xbrl_laporan.csv` | Satu baris per laporan: nama entitas, periode, mata uang, pembulatan, jumlah angka |
+| `xbrl_pemeriksaan.csv` | Hasil pemeriksaan konsistensi per laporan |
+| `xbrl_konflik.csv` | Pos yang muncul dua kali di satu laporan dengan nilai berbeda |
+
+Nilai disimpan dalam satuan penuh (Rupiah atau Dolar), bukan jutaan. Satu angka bisa muncul di beberapa laporan (misalnya laba 2024 di laporan 2024 dan sebagai pembanding di laporan 2025), jadi kolom `tahun_laporan` menentukan versi mana yang dipakai.
+
+Tes unit:
+
+```bash
+python -m unittest discover -s tests
+```
+
+### Pemeriksaan konsistensi
+
+| Pemeriksaan | Hasil (48 laporan) |
+|---|---|
+| Aset = liabilitas + dana syirkah temporer + ekuitas | 96/96 cocok |
+| Pendapatan − beban pokok = laba kotor | 56/56 cocok (40 dilewati: bank dan TLKM tidak punya laba kotor) |
+| Laba = bagian induk + bagian nonpengendali | 96/96 cocok |
+| Saldo awal ekuitas = saldo akhir tahun lalu | 45/48 cocok |
+
+Tiga ketidakcocokan saldo awal ekuitas (BBRI 2022, BBRI 2023, BMRI 2023) berasal dari data IDX sendiri: kolom komponen ekuitas di laporan tahun berjalan dan tahun lalu berbeda, padahal ada di laporan yang sama. Total ekuitasnya tetap seimbang.
+
+### Pelajaran dari data
+
+- **File XBRL dari IDX tidak punya header konteks.** Periode harus dibaca dari nama konteks (`CurrentYearInstant`, `PriorYearDuration`, `Prior2YearsInstant`, dan seterusnya). Artinya diverifikasi dengan mencocokkan saldo kas antarlaporan.
+- **Saldo awal dan akhir di laporan perubahan ekuitas memakai konteks yang sama.** Tanggalnya baru jelas dari nama pos (`EquityPositionBeginningOfThePeriod` vs `EquityPositionEndOfThePeriod`).
+- **Tag kosong (`xsi:nil="true"`) ditulis tanpa tag penutup.** Pembacaan dengan pola teks menelan angka berikutnya; parser HTML yang benar diperlukan.
+- **Empat satuan dan dua mata uang**: penuh (MYOR), ribuan (ADRO, USD), jutaan (kebanyakan), miliaran (TLKM, ASII). Rugi ditandai atribut `sign="-"`, bukan tanda minus di angka.
+- **Restatement sering terjadi.** Contoh terbesar: pendapatan ADRO 2023 berubah dari USD 6.518 juta menjadi USD 2.135 juta di laporan 2024 karena pelepasan bisnis.
+- **Kode saham lebih andal daripada nama.** ADRO berganti nama, dan nama PTBA ditulis tiga cara berbeda dalam empat tahun.
+- **XBRL juga bisa salah tag.** Dua arus kas BBRI 2024 tampak tertukar di laporan 2025, dan kolom 2022 di laporan ekuitas BMRI 2023 mencatat −Rp 16,8 T sebagai "penerapan awal standar akuntansi" tanpa baris dividen.
+
+## Struktur folder
 
 ```
 neraca-qa/
 ├── data/
-│   ├── raw/            # PDF laporan keuangan asli
-│   └── processed/      # hasil ekstraksi tabel dan teks
+│   ├── raw/            # zip XBRL dan PDF asli dari IDX (tidak di-commit)
+│   └── processed/      # hasil olahan, bisa dibuat ulang (tidak di-commit)
 ├── src/neraca/
-│   ├── ingest/         # unduh dan parsing PDF
-│   ├── extract/        # ekstraksi dan normalisasi tabel
-│   ├── retrieval/      # hybrid search dan reranking
-│   ├── tools/          # SQL dan fungsi kalkulator
-│   └── answer/         # router dan penyusunan jawaban
-├── eval/
-│   ├── questions.jsonl # set pertanyaan uji + kunci jawaban
-│   └── run_eval.py
-├── app/                # demo Streamlit
+│   ├── ingest/
+│   │   └── xbrl.py     # parser XBRL IDX → CSV kunci jawaban
+│   ├── extract/        # (rencana) ekstraksi dan normalisasi tabel PDF
+│   ├── retrieval/      # (rencana) hybrid search dan reranking
+│   ├── tools/          # (rencana) SQL dan fungsi kalkulator
+│   └── answer/         # (rencana) router dan penyusunan jawaban
+├── tests/
+│   └── test_xbrl.py    # tes parser XBRL
+├── eval/               # (rencana) set pertanyaan uji dan skrip evaluasi
+├── app/                # (rencana) demo Streamlit
+├── pyproject.toml
 └── README.md
 ```

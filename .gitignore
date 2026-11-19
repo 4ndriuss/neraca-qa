@@ -3,6 +3,10 @@
 data/raw/*
 !data/raw/.gitkeep
 
+# Hasil olahan bisa dibuat ulang dari data/raw (lihat README).
+data/processed/*
+!data/processed/.gitkeep
+
 # Python
 __pycache__/
 *.py[cod]
