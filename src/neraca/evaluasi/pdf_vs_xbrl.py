@@ -14,6 +14,10 @@ Setiap angka hasil ekstraksi PDF dicari di fakta XBRL laporan yang sama
   cocok) jumlahnya sama dengan satu fakta XBRL. Taksonomi XBRL sering
   menggabungkan beberapa pos PDF, misalnya pembelian, penjualan, dan jatuh tempo
   efek-efek menjadi ``OtherCashInflowsOutflowsFromInvestingActivities``.
+- ``laporan_berikut``: tidak cocok dengan XBRL laporan yang sama, tetapi sama
+  persis (atau beda tanda) dengan angka pembanding di XBRL laporan tahun
+  berikutnya. Contoh: total aset PTBA 2024 di PDF audit final sama dengan
+  angka 2024 di XBRL laporan 2025, bukan dengan XBRL laporan 2024.
 - ``konsisten_internal``: tidak ada di XBRL, tetapi aritmetika PDF-nya sendiri
   cocok: subtotal (``Jumlah``, ``Total``, ``Bersih``, atau baris tanpa label)
   sama dengan jumlah dua baris atau lebih tepat di atasnya. Subtotal dan baris
@@ -50,7 +54,7 @@ _LAPORAN_UTAMA = re.compile(r"^\d[235]\d{5}\.html$")
 _SALDO_AWAL = re.compile(r"awal (tahun|periode)", re.IGNORECASE)
 _SUBTOTAL = re.compile(r"^(jumlah|total|sub\s*-?\s*jumlah|bersih|neto|net)\b|[-–]\s*(bersih|neto)$",
                        re.IGNORECASE)
-STATUS_XBRL = ("persis", "tanda_terbalik", "turunan", "gabungan")
+STATUS_XBRL = ("persis", "tanda_terbalik", "turunan", "gabungan", "laporan_berikut")
 STATUS = STATUS_XBRL + ("konsisten_internal", "tanpa_kunci", "tidak_cocok")
 MIN_FAKTA_KUNCI = 20  # tahun dengan fakta XBRL lebih sedikit dari ini dianggap tanpa kunci
 
@@ -215,6 +219,18 @@ def cocokkan(pdf_csv: Path, xbrl_csv: Path, emiten: str, tahun_laporan: int) -> 
     for tahun in {h.tahun for h in hasil}:
         untuk(tahun)
     _cocokkan_gabungan(hasil, pencocok)
+
+    # Kunci kedua: angka pembanding di XBRL laporan tahun berikutnya (hanya pencocokan persis).
+    berikut = muat_xbrl(xbrl_csv, emiten, tahun_laporan + 1)
+    pencocok_berikut = {th: Pencocok(f) for th, f in berikut.items()}
+    for h in hasil:
+        if h.status != "tidak_cocok":
+            continue
+        tahun_cari = h.tahun - 1 if _SALDO_AWAL.search(h.label) else h.tahun
+        p = pencocok_berikut.get(tahun_cari)
+        konsep = p.cari_nilai(Decimal(h.nilai)) if p else None
+        if konsep:
+            h.status, h.konsep = "laporan_berikut", f"{konsep} (XBRL laporan {tahun_laporan + 1})"
     for h in hasil:
         if h.status == "tidak_cocok" and len(xbrl.get(h.tahun, [])) < MIN_FAKTA_KUNCI:
             h.status = "tanpa_kunci"

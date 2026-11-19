@@ -410,6 +410,23 @@ class TesCocokkanCsv(unittest.TestCase):
         self.assertEqual(hasil[("Pihak berelasi", 2024)], "konsisten_internal")
         self.assertEqual(hasil[("Pihak ketiga", 2022)], "tanpa_kunci")
 
+    def test_kunci_dari_laporan_tahun_berikutnya(self):
+        # PTBA: total aset 2024 di PDF final sama dengan angka pembanding di XBRL laporan 2025.
+        kolom_x = ["emiten", "tahun_laporan", "konsep", "nilai", "tahun_periode", "dimensi", "file_html"]
+        xbrl = self.tulis("x.csv", kolom_x, [
+            dict(emiten="PTBA", tahun_laporan=2024, konsep="Assets", nilai=41854334,
+                 tahun_periode=2024, dimensi="", file_html="1210000.html"),
+            dict(emiten="PTBA", tahun_laporan=2025, konsep="Assets", nilai=41785576,
+                 tahun_periode=2024, dimensi="", file_html="1210000.html"),
+        ])
+        kolom_p = ["halaman", "urutan", "induk", "label", "jenis", "tahun", "nilai", "teks_nilai"]
+        pdf = self.tulis("p.csv", kolom_p, [dict(halaman=9, urutan=1, induk="", label="JUMLAH ASET",
+                                                 jenis="nilai", tahun=2024, nilai=41785576,
+                                                 teks_nilai="41,785,576")])
+        h = cocokkan(pdf, xbrl, "PTBA", 2024)[0]
+        self.assertEqual(h.status, "laporan_berikut")
+        self.assertIn("XBRL laporan 2025", h.konsep)
+
 
 if __name__ == "__main__":
     unittest.main()

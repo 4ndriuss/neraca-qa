@@ -286,30 +286,31 @@ Perintah pertama mencari sendiri halaman neraca, laba rugi, dan arus kas, lalu m
 
 Gunakan PDF laporan keuangan **audit** yang disusun perusahaan, bukan `FinancialStatement-…-Tahunan-KODE.pdf` dari IDX. File IDX itu adalah cetakan data XBRL, sehingga mengujinya sama saja dengan memeriksa kunci jawaban dengan dirinya sendiri.
 
-### Hasil: 11 emiten, laporan tahunan 2024
+### Hasil: 12 emiten, laporan tahunan 2024
 
 | Emiten | Angka | Cocok XBRL | Konsisten internal | **Terverifikasi** | Tanpa kunci | Tidak cocok |
 |---|---|---|---|---|---|---|
 | ADRO | 308 | 94,8% | 2,3% | **97,1%** | – | 2,9% |
 | ASII | 293 | 99,7% | – | **99,7%** | – | 0,3% |
 | BBCA | 274 | 93,8% | 6,2% | **100,0%** | – | – |
-| BBRI | 416 | 64,4% | 15,1% | **79,6%** | 7,9% | 12,5% |
-| BMRI | 506 | 84,6% | 9,9% | **94,5%** | – | 5,5% |
-| BRIS | 378 | 79,9% | 10,6% | **90,5%** | – | 9,5% |
+| BBRI | 416 | 67,5% | 14,9% | **82,5%** | 7,9% | 9,6% |
+| BMRI | 506 | 85,2% | 9,5% | **94,7%** | – | 5,3% |
+| BRIS | 378 | 80,2% | 10,6% | **90,7%** | – | 9,3% |
 | GOTO | 282 | 93,6% | 0,7% | **94,3%** | – | 5,7% |
 | ICBP | 209 | 99,0% | – | **99,0%** | – | 1,0% |
 | MYOR | 204 | 98,0% | 1,0% | **99,0%** | – | 1,0% |
+| PTBA | 216 | 95,8% | 3,2% | **99,1%** | – | 0,9% |
 | TLKM | 232 | 98,3% | 0,9% | **99,1%** | – | 0,9% |
 | UNVR | 165 | 98,2% | – | **98,2%** | – | 1,8% |
-| **Total** | **3.267** | **88,8%** | **5,6%** | **94,4%** | 1,0% | 4,6% |
+| **Total** | **3.483** | **89,7%** | **5,4%** | **95,1%** | 0,9% | 4,0% |
 
-PTBA belum diuji karena file yang terunduh baru surat pengantarnya.
+PTBA ditambahkan terakhir dan langsung terbaca tanpa perubahan kode ekstraktor, jadi aturan dari 11 emiten sebelumnya sudah cukup umum.
 
 Arti status:
 
 | Status | Arti |
 |---|---|
-| Cocok XBRL | Sama persis, sama dengan tanda terbalik (beban dalam kurung), turunan dari 2–3 fakta (misalnya bruto − cadangan, atau giro + tabungan + deposito), atau gabungan 2–4 baris PDF berurutan yang menjadi satu fakta |
+| Cocok XBRL | Sama persis, sama dengan tanda terbalik (beban dalam kurung), turunan dari 2–3 fakta (misalnya bruto − cadangan, atau giro + tabungan + deposito), gabungan 2–4 baris PDF berurutan yang menjadi satu fakta, atau sama persis dengan angka pembanding di XBRL laporan tahun berikutnya |
 | Konsisten internal | Tidak ada di XBRL, tetapi subtotal PDF (`Jumlah`, `Total`, `Bersih`, atau baris tanpa label) sama dengan jumlah baris tepat di atasnya. Subtotal dan penyusunnya diberi status ini, karena satu angka yang salah baca akan membuat penjumlahannya meleset |
 | Tanpa kunci | XBRL hampir tidak punya data untuk tahun kolom itu (kolom 2022 di neraca tiga kolom BBRI hanya punya 4 fakta) |
 | Tidak cocok | Belum terverifikasi; perlu diperiksa manual |
@@ -318,6 +319,7 @@ Angka yang tidak cocok sudah diperiksa per emiten. Yang tersisa hampir semuanya 
 
 - **XBRL bank jauh lebih tipis daripada PDF.** BRIS dan BMRI hanya punya sekitar 90–110 fakta neraca per tahun, sedangkan PDF-nya memuat rincian per pihak dan subtotal bertingkat (`Jumlah simpanan wadiah`, `Jumlah giro, tabungan dan deposito mudharabah`).
 - **XBRL BBRI tidak sama dengan PDF audit-nya.** Angka 2023 di XBRL BBRI 2024 identik dengan XBRL BBRI 2023, padahal PDF memakai angka 2023 yang disajikan kembali (`2023*)`). Arus kas 2024 juga berbeda: kas neto dari operasi Rp 24.283.108 juta di PDF vs Rp 24.100.898 juta di XBRL. Keduanya konsisten secara internal, jadi kemungkinan XBRL dibuat dari versi laporan yang berbeda.
+- **XBRL PTBA 2024 juga berbeda dari PDF final-nya**, tetapi angka PDF sama persis dengan angka pembanding 2024 di XBRL laporan 2025. Contohnya total aset Rp 41.785.576 juta di PDF dan di XBRL laporan 2025, tetapi Rp 41.854.334 juta di XBRL laporan 2024. Karena itu XBRL laporan tahun berikutnya dipakai sebagai kunci kedua, dengan pencocokan persis saja.
 - **XBRL BBCA tidak konsisten di dalam dirinya sendiri.** Halaman catatan (`4631100.html`) masih memuat pendapatan syariah 2023 sebelum restatement (Rp 855.189 juta), sedangkan laba ruginya memakai angka yang disajikan kembali (Rp 663.932 juta).
 - **Beberapa pos tidak ditandai atau dikelompokkan ulang**, misalnya laba usaha (MYOR, ICBP, ADRO), EBITDA (UNVR), laba per ADS (TLKM), dan rincian arus kas operasi GOTO.
 
