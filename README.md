@@ -19,6 +19,7 @@
 - [Stack](#stack)
 - [Data XBRL: kunci jawaban](#data-xbrl-kunci-jawaban)
 - [Ekstraksi tabel PDF](#ekstraksi-tabel-pdf)
+- [Normalisasi nama akun](#normalisasi-nama-akun)
 - [Struktur folder](#struktur-folder)
 
 ---
@@ -352,6 +353,52 @@ Pelajaran lain:
 - **XBRL menyimpan komponen, PDF menampilkan totalnya**, dan sebaliknya. Karena itu kunci jawaban perlu pencocokan turunan dan gabungan, bukan hanya pencocokan persis.
 - **Satu emiten tidak cukup untuk menguji ekstraktor.** Di BBCA saja hasilnya 96,6%, tetapi di awal pengujian 11 emiten ada yang hanya 1,3% (TLKM, karena satuan miliaran tidak terdeteksi) dan 48% (MYOR).
 
+## Normalisasi nama akun
+
+Label di laporan keuangan berbeda-beda antaremiten ("Laba tahun berjalan", "LABA BERSIH", "Laba bersih tahun berjalan"), dan sebagian hanya bermakna dalam konteksnya: "Pemilik entitas induk" bisa berarti laba bersih atau laba komprehensif milik induk, tergantung judul di atasnya. Normalisasi memetakan setiap baris PDF ke salah satu dari **36 pos standar**, misalnya `total_aset`, `laba_bersih_induk`, atau `arus_kas_operasi`.
+
+```bash
+.venv/Scripts/neraca-akun data/processed/pdf_*_lk_cocok.csv
+```
+
+Hasilnya `data/processed/akun_standar.csv`: satu angka per emiten, tahun, dan pos standar, lengkap dengan mata uang, halaman sumber, label aslinya, dan status verifikasinya. Tabel ini menjadi dasar database jawaban.
+
+### Cara kerja
+
+Pemetaan memakai aturan berurutan atas tiga hal: jenis laporan, label, dan judul di atasnya. Judulnya bisa berupa `induk` (judul yang lebih menjorok ke kiri) atau `konteks` (judul terakhir di halaman, untuk tata letak yang judul dan butirnya sejajar). Contoh aturan yang dibutuhkan data asli:
+
+| Kasus | Aturan |
+|---|---|
+| "Pemilik entitas induk" di bawah judul laba vs laba komprehensif | Dibedakan dari judulnya |
+| "Kepentingan nonpengendali" di neraca vs laba rugi | Dibedakan dari jenis laporan |
+| "Penjualan" di bawah judul "Beban usaha" (MYOR) | Beban penjualan, bukan pendapatan |
+| "Penghasilan bunga" di perusahaan non-bank | Tidak dipetakan ke pendapatan bunga bank |
+| Subtotal tanpa label di bawah "(BEBAN) MANFAAT PAJAK PENGHASILAN" (TLKM) | Mewarisi pos dari judulnya |
+| Subtotal tanpa label di bawah "… diatribusikan kepada:" | Sengaja tidak dipetakan: di BMRI isinya laba total, di ADRO jumlah milik induk |
+| "Kas bersih … aktivitas operasi" dicetak dua kali (BBCA) | Dipilih kemunculan terakhir (sesudah pajak) |
+| "Laba per saham dasar dan dilusian" | Mengisi dua pos |
+| Emiten tanpa kepentingan nonpengendali (BRIS, UNVR) | Bagian induk diturunkan dari totalnya, ditandai `turunan_tanpa_nonpengendali` |
+
+### Evaluasi
+
+Setiap pos standar terhubung ke konsep XBRL padanannya. Baris PDF yang nilainya cocok persis dengan XBRL sudah tahu konsepnya, sehingga aturan label bisa dinilai tanpa pelabelan manual:
+
+| Ukuran | Hasil |
+|---|---|
+| Presisi (pos hasil aturan sesuai konsep XBRL) | **99,7%** (652 benar, 2 salah) |
+| Recall per baris | 92,4% (yang terlewat sebagian besar subtotal tanpa label yang posnya sudah tersedia dari baris lain) |
+| Cakupan: emiten × tahun × pos yang punya nilai di XBRL | **92,3%** (631 dari 684) |
+| Cakupan dari nilai yang memang ada di PDF | **97,8%** (631 dari 645) |
+
+39 dari 684 nilai XBRL tidak ada di PDF sama sekali (misalnya dividen yang dikelompokkan berbeda atau XBRL yang tidak sama dengan PDF final), jadi tidak bisa dipetakan dari PDF. Sisa kesalahannya memang ambigu: XBRL ADRO menandai laba per saham dasar dan dilusian untuk dua set angka yang berbeda, dan GOTO memberi label "Jumlah penghasilan/(beban) komprehensif tahun berjalan" untuk penghasilan komprehensif *lain*.
+
+### Pelajaran
+
+- **Konsep XBRL adalah label gratis.** Pencocokan nilai di tahap sebelumnya sekaligus menghasilkan data latih dan data uji untuk pemetaan label, tanpa perlu melabeli manual.
+- **Ukur cakupan, bukan hanya akurasi per baris.** Yang penting untuk tanya-jawab adalah setiap pos tersedia per emiten dan tahun, bukan setiap baris terpetakan.
+- **Lebih baik tidak memetakan daripada salah petakan.** Aturan untuk subtotal di bawah "… diatribusikan kepada:" sempat menaikkan recall ke 97%, tetapi salah di ADRO, jadi dihapus.
+- **Normalisasi menemukan kesalahan ekstraksi.** Dua kesalahan label baru ketahuan di tahap ini: angka ASII sejajar dengan baris *pertama* label, bukan baris terakhir; dan label bergaya "Huruf Kapital Tiap Kata" yang terpotong setelah kata sambung (ICBP: "… dari Aktivitas" / "Operasi").
+
 ## Struktur folder
 
 ```
@@ -366,12 +413,15 @@ neraca-qa/
 │   │   └── pdf_tabel.py      # ekstraksi tabel PDF dari posisi kata
 │   ├── evaluasi/
 │   │   └── pdf_vs_xbrl.py    # akurasi ekstraksi PDF terhadap XBRL
+│   ├── normalisasi/
+│   │   └── akun.py           # label PDF → 36 pos standar, dengan evaluasi
 │   ├── retrieval/            # (rencana) hybrid search dan reranking
 │   ├── tools/                # (rencana) SQL dan fungsi kalkulator
 │   └── answer/               # (rencana) router dan penyusunan jawaban
 ├── tests/
 │   ├── test_xbrl.py          # tes parser XBRL
-│   └── test_pdf_tabel.py     # tes ekstraktor PDF dan pencocokan
+│   ├── test_pdf_tabel.py     # tes ekstraktor PDF dan pencocokan
+│   └── test_akun.py          # tes normalisasi nama akun
 ├── eval/                     # (rencana) set pertanyaan uji
 ├── app/                      # (rencana) demo Streamlit
 ├── pyproject.toml

@@ -77,6 +77,9 @@ class HasilCocok:
     teks_nilai: str
     status: str
     konsep: str
+    laporan: str = ""
+    mata_uang: str = ""
+    konteks: str = ""
 
 
 def muat_xbrl(path: Path, emiten: str, tahun_laporan: int) -> dict[int, list[FaktaRingkas]]:
@@ -215,7 +218,9 @@ def cocokkan(pdf_csv: Path, xbrl_csv: Path, emiten: str, tahun_laporan: int) -> 
             if tahun_cari != tahun and konsep:
                 konsep += f" (saldo akhir {tahun_cari})"
             hasil.append(HasilCocok(int(r["halaman"]), int(r["urutan"]), r["induk"], r["label"],
-                                    tahun, r["nilai"], r["teks_nilai"], status, konsep))
+                                    tahun, r["nilai"], r["teks_nilai"], status, konsep,
+                                    r.get("laporan", ""), r.get("mata_uang", ""),
+                                    r.get("konteks", "")))
     for tahun in {h.tahun for h in hasil}:
         untuk(tahun)
     _cocokkan_gabungan(hasil, pencocok)

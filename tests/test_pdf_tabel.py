@@ -244,6 +244,35 @@ class TesEkstrakHalaman(unittest.TestCase):
         modal = next(b for b in hasil if b.jenis == "nilai" and b.tahun == 2024)
         self.assertEqual((modal.nilai, modal.skala), ("76300000000", 6))
 
+    def test_label_berlanjut_sesudah_baris_bernilai(self):
+        # ASII: angka sejajar baris pertama label, sisa label di bawahnya.
+        hasil = (Halaman().baris("Arus kas bersih yang diperoleh dari", "", "69.456", "58.234")
+                 .lanjut("aktivitas operasi").ekstrak())
+        self.assertEqual(set(per_pos(hasil)), {"Arus kas bersih yang diperoleh dari aktivitas operasi"})
+        self.assertFalse([b for b in hasil if b.jenis == "judul"])
+
+    def test_baris_berkurung_sesudah_nilai_adalah_pos_baru(self):
+        # UNVR: "(Penurunan)/ kenaikan bersih kas" bukan lanjutan pos di atasnya.
+        hasil = (Halaman().baris("Arus kas neto yang digunakan untuk aktivitas pendanaan", "",
+                                 "(3.294.681)", "(2.000.000)")
+                 .lanjut("(Penurunan)/ kenaikan bersih kas")
+                 .lanjut("dan setara kas", "", "(349.573)", "100.000").ekstrak())
+        self.assertEqual(set(per_pos(hasil)), {
+            "Arus kas neto yang digunakan untuk aktivitas pendanaan",
+            "(Penurunan)/ kenaikan bersih kas dan setara kas"})
+
+    def test_kata_sambung_berarti_lanjutan(self):
+        # ICBP: gaya Huruf Kapital Tiap Kata, "... dari Aktivitas" / "Operasi".
+        hasil = (Halaman().baris("Kas Neto yang Diperoleh dari Aktivitas")
+                 .lanjut("Operasi", "", "10.000.000", "9.000.000").ekstrak())
+        self.assertEqual(set(per_pos(hasil)), {"Kas Neto yang Diperoleh dari Aktivitas Operasi"})
+
+    def test_konteks_judul_terakhir(self):
+        hasil = (Halaman().baris("Laba tahun berjalan yang dapat diatribusikan kepada:")
+                 .lanjut("Pemilik entitas induk", "", "1.380", "1.641").ekstrak())
+        induk = next(b for b in hasil if b.jenis == "nilai")
+        self.assertEqual(induk.konteks, "Laba tahun berjalan yang dapat diatribusikan kepada:")
+
     def test_subtotal_tanpa_label(self):
         hasil = (Halaman().baris("Pihak berelasi", "", "194.411", "461.097")
                  .lanjut("Pihak ketiga", "", "46.474.028", "36.144.993")

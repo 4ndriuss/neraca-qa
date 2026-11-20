@@ -18,8 +18,10 @@ Aturan yang dipakai (diturunkan dari laporan tahunan 2024 sebelas emiten):
 - Format angka dideteksi per halaman: titik (``1.234.567``) atau koma
   (``1,234,567``) sebagai pemisah ribuan. Angka yang terpotong menjadi dua kata
   yang bersentuhan (``4`` + ``.601.449.023.397``) disambung dulu.
-- Label yang terpotong ke beberapa baris digabung sampai ketemu baris yang
-  punya nilai. Baris lanjutan berjarak rapat (tanpa baris kosong) dari baris
+- Label yang terpotong ke beberapa baris digabung. Angka bisa sejajar dengan
+  baris terakhir label (BBCA) atau baris pertamanya (ASII); baris lanjutan
+  sesudah baris bernilai disambung ke label baris itu. Baris lanjutan
+  berjarak rapat (tanpa baris kosong) dari baris
   sebelumnya dan diawali huruf kecil, angka, kurung, atau ``Rp``, atau
   merupakan baris kapital semua di bawah baris kapital semua. Baris rapat yang
   diawali huruf kapital biasa, atau butir ``- Pihak ketiga``, memulai pos baru.
@@ -31,6 +33,9 @@ Aturan yang dipakai (diturunkan dari laporan tahunan 2024 sebelas emiten):
   baris di bawahnya diabaikan.
 - Kolom ``induk`` berisi judul bagian yang membawahi pos itu, ditentukan dari
   indentasi (misalnya ``Kredit yang diberikan`` untuk ``Pihak ketiga``).
+  Kolom ``konteks`` berisi judul terakhir di atas pos itu pada halaman yang
+  sama, berapa pun indentasinya; berguna bila judul dan butirnya sejajar
+  (``Laba yang dapat diatribusikan kepada:`` / ``Pemilik entitas induk``).
 
 Cara pakai::
 
@@ -84,6 +89,7 @@ class Baris:
     catatan: str
     jenis: str  # nilai | judul
     induk: str = ""
+    konteks: str = ""
     laporan: str = ""
     tahun: int | None = None
     nilai: str = ""
@@ -288,15 +294,36 @@ def _skala_baris(label: str, induk: str, skala_halaman: int) -> int:
     return skala_halaman
 
 
+_KATA_SAMBUNG = re.compile(
+    r"\b(dari|untuk|yang|dan|atau|atas|pada|kepada|dengan|di|ke|oleh|serta|sebagai|"
+    r"aktivitas|kegiatan|setelah|sebelum|dikurangi)\)?[,/]?$", re.IGNORECASE)
+
+
 def _lanjutan(teks: str, sebelumnya: str, rapat: bool) -> bool:
     """Apakah baris label ``teks`` melanjutkan label ``sebelumnya``."""
     if not teks or not rapat:
         return False
     if sebelumnya.count("(") > sebelumnya.count(")"):
         return True  # kurung belum ditutup: "(dalam" / "Rupiah penuh)"
+    if _KATA_SAMBUNG.search(sebelumnya):
+        return True  # "Kas Neto yang Diperoleh dari Aktivitas" / "Operasi" (ICBP)
     if teks[0].islower() or teks[0].isdigit() or teks[0] == "(" or teks.startswith("Rp "):
         return True
     return _kapital_semua(teks) and _kapital_semua(sebelumnya)
+
+
+def _lanjutan_sesudah_nilai(teks: str, sebelumnya: str, rapat: bool) -> bool:
+    """Versi ketat untuk baris sesudah baris bernilai (pola ASII).
+
+    Baris yang diawali kurung atau huruf kapital di sini biasanya pos baru
+    ("(Penurunan)/kenaikan bersih kas" di UNVR), jadi hanya huruf kecil, kurung
+    yang belum ditutup, atau kata sambung di akhir label sebelumnya yang dihitung.
+    """
+    if not teks or not rapat:
+        return False
+    if sebelumnya.count("(") > sebelumnya.count(")") or _KATA_SAMBUNG.search(sebelumnya):
+        return True
+    return teks[0].islower()
 
 
 def ekstrak_halaman(kata: list[dict], halaman: int, teks_halaman: str = "") -> list[Baris]:
@@ -329,6 +356,9 @@ def ekstrak_halaman(kata: list[dict], halaman: int, teks_halaman: str = "") -> l
     tunda = _Tunda()
     catatan_lepas: list[str] = []  # nomor catatan di baris tanpa label
     judul_aktif: list[tuple[float, str]] = []  # (indentasi, label) judul yang membawahi
+    terakhir: list[Baris] = []  # baris bernilai terakhir, untuk label yang berlanjut di bawahnya
+    y_terakhir = 0.0
+    judul_terakhir: list[Baris] = []  # judul terakhir di halaman, untuk kolom konteks
 
     def induk_untuk(indentasi: float) -> str:
         judul_aktif[:] = [(x, t) for x, t in judul_aktif if x < indentasi - 1]
@@ -337,10 +367,13 @@ def ekstrak_halaman(kata: list[dict], halaman: int, teks_halaman: str = "") -> l
     def simpan_judul() -> None:
         if tunda.label:
             x0, label = tunda.x0 or 0.0, " ".join(tunda.label)
-            hasil.append(Baris(halaman, len(hasil), label, "".join(tunda.catatan), "judul",
-                               induk=induk_untuk(x0), laporan=laporan, skala=skala,
-                               mata_uang=mata_uang, y=tunda.y, indentasi=x0))
+            konteks = judul_terakhir[0].label if judul_terakhir else ""
+            judul = Baris(halaman, len(hasil), label, "".join(tunda.catatan), "judul",
+                          induk=induk_untuk(x0), konteks=konteks, laporan=laporan, skala=skala,
+                          mata_uang=mata_uang, y=tunda.y, indentasi=x0)
+            hasil.append(judul)
             judul_aktif.append((x0, label))
+            judul_terakhir[:] = [judul]
 
     for b in badan:
         if _CATATAN_KAKI.search(" ".join(w["text"] for w in b)):
@@ -364,7 +397,17 @@ def ekstrak_halaman(kata: list[dict], halaman: int, teks_halaman: str = "") -> l
         if not label and not nilai:
             catatan_lepas.extend(catatan)
             continue
+        if label and not nilai and not tunda.label and terakhir and terakhir[0].label and \
+                _lanjutan_sesudah_nilai(teks_label, terakhir[0].label,
+                                        label[0]["top"] - y_terakhir <= jarak_rapat):
+            # ASII: angka sejajar baris pertama label, sisa label di bawahnya
+            for b_ in terakhir:
+                b_.label = f"{b_.label} {teks_label}"
+                b_.catatan += "".join(catatan)
+            y_terakhir = label[0]["top"]
+            continue
         if label:
+            terakhir = []
             rapat = label[0]["top"] - tunda.y_terakhir <= jarak_rapat
             if tunda.label and (butir or not _lanjutan(teks_label, tunda.label[-1], rapat)):
                 simpan_judul()
@@ -383,15 +426,19 @@ def ekstrak_halaman(kata: list[dict], halaman: int, teks_halaman: str = "") -> l
             induk = induk_untuk(indentasi)
             label_lengkap = " ".join(tunda.label)
             skala_pos = _skala_baris(label_lengkap, induk, skala)
+            terakhir = []
+            y_terakhir = label[0]["top"] if label else nilai[0][1]["top"]
             for kol, w in nilai:
                 angka = parse_angka_id(w["text"], ribuan)
-                hasil.append(Baris(
+                terakhir.append(Baris(
                     halaman=halaman, urutan=urut, label=label_lengkap,
-                    catatan="".join(tunda.catatan), jenis="nilai", induk=induk, laporan=laporan,
+                    catatan="".join(tunda.catatan), jenis="nilai", induk=induk,
+                    konteks=judul_terakhir[0].label if judul_terakhir else "", laporan=laporan,
                     tahun=kol.tahun, nilai=format(angka.scaleb(skala_pos).normalize(), "f"),
                     teks_nilai=w["text"], skala=skala_pos, mata_uang=mata_uang, y=w["top"],
                     indentasi=indentasi,
                 ))
+            hasil.extend(terakhir)
             tunda = _Tunda()
     simpan_judul()
     if not kolom_tahun:

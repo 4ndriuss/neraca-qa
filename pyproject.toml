@@ -16,6 +16,7 @@ dependencies = [
 neraca-xbrl = "neraca.ingest.xbrl:main"
 neraca-pdf = "neraca.extract.pdf_tabel:main"
 neraca-cocok = "neraca.evaluasi.pdf_vs_xbrl:main"
+neraca-akun = "neraca.normalisasi.akun:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
