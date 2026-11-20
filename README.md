@@ -20,6 +20,7 @@
 - [Data XBRL: kunci jawaban](#data-xbrl-kunci-jawaban)
 - [Ekstraksi tabel PDF](#ekstraksi-tabel-pdf)
 - [Normalisasi nama akun](#normalisasi-nama-akun)
+- [Database](#database)
 - [Struktur folder](#struktur-folder)
 
 ---
@@ -399,6 +400,44 @@ Setiap pos standar terhubung ke konsep XBRL padanannya. Baris PDF yang nilainya 
 - **Lebih baik tidak memetakan daripada salah petakan.** Aturan untuk subtotal di bawah "… diatribusikan kepada:" sempat menaikkan recall ke 97%, tetapi salah di ADRO, jadi dihapus.
 - **Normalisasi menemukan kesalahan ekstraksi.** Dua kesalahan label baru ketahuan di tahap ini: angka ASII sejajar dengan baris *pertama* label, bukan baris terakhir; dan label bergaya "Huruf Kapital Tiap Kata" yang terpotong setelah kata sambung (ICBP: "… dari Aktivitas" / "Operasi").
 
+## Database
+
+Semua hasil olahan dimuat ke satu file SQLite, `data/processed/neraca.db`. Database ini selalu dibangun ulang dari CSV, jadi tidak pernah diedit manual. Urutan lengkap dari data mentah:
+
+```bash
+.venv/Scripts/neraca-xbrl
+.venv/Scripts/neraca-pdf data/raw/*_lk.pdf
+.venv/Scripts/neraca-cocok data/processed/pdf_*_lk.csv
+.venv/Scripts/neraca-akun data/processed/pdf_*_lk_cocok.csv
+.venv/Scripts/neraca-db
+```
+
+| Tabel | Isi | Baris |
+|---|---|---|
+| `emiten` | Kode, nama terbaru, sektor, subsektor | 12 |
+| `laporan` | Satu baris per laporan: periode, mata uang, pembulatan, file XBRL dan PDF | 48 |
+| `pos` | 36 pos standar dan konsep XBRL padanannya | 36 |
+| `angka` | **Tabel utama untuk menjawab**: emiten, tahun laporan, tahun, pos, nilai, halaman sumber, status verifikasi | 685 |
+| `baris_pdf` | Semua baris PDF dengan label asli, untuk pertanyaan di luar 36 pos | 3.483 |
+| `xbrl_fakta` | Fakta XBRL tanpa dimensi, kunci jawaban untuk set pertanyaan uji | 18.049 |
+
+Nilai disimpan sebagai teks desimal supaya tidak ada pembulatan floating point. Kolom `tahun_laporan` membedakan versi angka yang sama: laba 2023 bisa diambil dari laporan 2023 atau, setelah disajikan kembali, dari laporan 2024.
+
+Contoh dari Python:
+
+```python
+from decimal import Decimal
+from neraca.db import koneksi
+
+con = koneksi()
+r = con.execute("""SELECT nilai, mata_uang, halaman FROM angka
+                   WHERE emiten = 'BBCA' AND pos = 'laba_bersih_induk'
+                     AND tahun = 2024 AND tahun_laporan = 2024""").fetchone()
+Decimal(r["nilai"])  # Decimal('54836305000000'), IDR, halaman 11
+```
+
+SQLite dipilih untuk tahap ini karena tidak perlu server dan repo bisa langsung dicoba. Semua SQL-nya SQL standar, jadi pindah ke Postgres (misalnya untuk pgvector di jalur naratif) cukup mengganti koneksi dan menjalankan ulang pemuat.
+
 ## Struktur folder
 
 ```
@@ -407,6 +446,7 @@ neraca-qa/
 │   ├── raw/                  # zip XBRL dan PDF asli dari IDX (tidak di-commit)
 │   └── processed/            # hasil olahan, bisa dibuat ulang (tidak di-commit)
 ├── src/neraca/
+│   ├── db.py                 # pembangun database SQLite
 │   ├── ingest/
 │   │   └── xbrl.py           # parser XBRL IDX → CSV kunci jawaban
 │   ├── extract/
@@ -421,7 +461,8 @@ neraca-qa/
 ├── tests/
 │   ├── test_xbrl.py          # tes parser XBRL
 │   ├── test_pdf_tabel.py     # tes ekstraktor PDF dan pencocokan
-│   └── test_akun.py          # tes normalisasi nama akun
+│   ├── test_akun.py          # tes normalisasi nama akun
+│   └── test_db.py            # tes pembangun database
 ├── eval/                     # (rencana) set pertanyaan uji
 ├── app/                      # (rencana) demo Streamlit
 ├── pyproject.toml

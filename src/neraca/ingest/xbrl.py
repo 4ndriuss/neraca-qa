@@ -94,6 +94,8 @@ class Laporan:
     jumlah_fakta: int
     jumlah_kosong: int
     jumlah_konflik: int
+    sektor: str = ""
+    subsektor: str = ""
 
 
 @dataclass
@@ -299,6 +301,8 @@ def baca_zip(path: Path) -> tuple[Laporan, list[Fakta], list[Konflik]]:
         jumlah_fakta=len(fakta),
         jumlah_kosong=kosong,
         jumlah_konflik=len(konflik),
+        sektor=info.get("Sector", ""),
+        subsektor=info.get("Subsector", ""),
     )
     return laporan, list(fakta.values()), konflik
 
