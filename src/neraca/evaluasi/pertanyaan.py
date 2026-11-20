@@ -14,9 +14,15 @@ Jenis kunci:
 - ``tidak_tersedia``: sistem harus menyatakan data tidak tersedia, beserta
   alasan yang diharapkan
 
+Hasil setiap sistem penjawab disimpan ke ``eval/hasil/<sistem>.jsonl`` (satu
+baris per pertanyaan: jawaban, benar/salah, keterangan, dan jejak panggilan
+alat), lalu semua hasil di folder itu dirangkum berdampingan di
+``eval/hasil/ringkasan.md``. Isi file tidak memuat waktu, supaya diff git hanya
+berubah bila hasilnya berubah.
+
 Cara pakai::
 
-    neraca-uji            # tulis eval/pertanyaan.jsonl lalu jalankan semua rencana
+    neraca-uji            # tulis eval/pertanyaan.jsonl, jalankan rencana, simpan hasil
 """
 
 from __future__ import annotations
@@ -274,34 +280,130 @@ def nilai_jawaban(kunci: dict[str, Any], jawaban: dict[str, Any]) -> tuple[bool,
     return False, f"jawab {prediksi}, kunci {kunci['nilai']}"
 
 
+# --------------------------------------------------------------------------
+# Menjalankan sistem penjawab dan menyimpan hasilnya
+# --------------------------------------------------------------------------
+
+# Penjawab: menerima satu soal, mengembalikan (jawaban terstruktur, jejak panggilan alat).
+Penjawab = Callable[[dict[str, Any]], tuple[dict[str, Any], list[dict[str, Any]]]]
+
+KETERANGAN_SISTEM = {
+    "rencana": "Rencana jawaban yang benar dijalankan langsung, tanpa LLM (batas atas alat dan data)",
+}
+
+
+def penjawab_rencana(alat: Alat) -> Penjawab:
+    def jawab(soal: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        jejak = [{"alat": l["alat"], "argumen": l["argumen"]} for l in soal["rencana"]]
+        return jawab_dengan_rencana(alat, soal), jejak
+    return jawab
+
+
+def jalankan_uji(soal: list[dict[str, Any]], penjawab: Penjawab, sistem: str) -> list[dict[str, Any]]:
+    """Jawab dan nilai setiap soal. Galat penjawab dicatat sebagai jawaban salah."""
+    hasil = []
+    for s in soal:
+        try:
+            jawaban, jejak = penjawab(s)
+        except Exception as exc:  # satu soal gagal tidak boleh menghentikan seluruh uji
+            jawaban, jejak = {"tipe": "galat", "pesan": f"{type(exc).__name__}: {exc}"}, []
+        benar, keterangan = nilai_jawaban(s["kunci"], jawaban)
+        hasil.append({"id": s["id"], "kategori": s["kategori"], "pertanyaan": s["pertanyaan"],
+                      "sistem": sistem, "kunci": s["kunci"], "jawaban": jawaban, "benar": benar,
+                      "keterangan": keterangan, "jejak": jejak})
+    return hasil
+
+
+def tulis_jsonl(path: Path, baris: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="\n") as fh:
+        for b in baris:
+            fh.write(json.dumps(b, ensure_ascii=False) + "\n")
+
+
+def baca_jsonl(path: Path) -> list[dict[str, Any]]:
+    with path.open(encoding="utf-8") as fh:
+        return [json.loads(b) for b in fh if b.strip()]
+
+
+def _sel(teks: Any) -> str:
+    """Teks aman untuk sel tabel Markdown."""
+    return " ".join(str(teks).split()).replace("|", "\\|")
+
+
+def ringkasan_markdown(semua: dict[str, list[dict[str, Any]]]) -> str:
+    """Tabel perbandingan: benar per kategori untuk setiap sistem, lalu rincian per soal."""
+    sistem = list(semua)
+    kategori = list(dict.fromkeys(h["kategori"] for hasil in semua.values() for h in hasil))
+    baris = ["# Hasil uji pertanyaan", "",
+             "Dibuat otomatis oleh `neraca-uji` dari `eval/hasil/*.jsonl`; jangan diedit manual.", ""]
+    baris += ["| Sistem | Keterangan |", "|---|---|"]
+    baris += [f"| `{s}` | {KETERANGAN_SISTEM.get(s, '')} |" for s in sistem]
+    baris += ["", "## Per kategori", "",
+              "| Kategori | " + " | ".join(f"`{s}`" for s in sistem) + " |",
+              "|---|" + "---|" * len(sistem)]
+    for kat in kategori + ["**Total**"]:
+        sel = []
+        for s in sistem:
+            h = [x for x in semua[s] if kat == "**Total**" or x["kategori"] == kat]
+            benar = sum(x["benar"] for x in h)
+            teks = f"{benar}/{len(h)}"
+            sel.append(f"**{teks} ({benar / len(h):.0%})**" if kat == "**Total**" and h else teks)
+        baris.append(f"| {kat} | " + " | ".join(sel) + " |")
+    baris += ["", "## Per pertanyaan", "",
+              "| ID | Pertanyaan | " + " | ".join(f"`{s}`" for s in sistem) + " |",
+              "|---|---|" + "---|" * len(sistem)]
+    per_id: dict[str, dict[str, dict[str, Any]]] = {}
+    for s, hasil in semua.items():
+        for h in hasil:
+            per_id.setdefault(h["id"], {})[s] = h
+    for i, per_sistem in per_id.items():
+        contoh = next(iter(per_sistem.values()))
+        sel = [("✅" if per_sistem[s]["benar"] else "❌") if s in per_sistem else "–" for s in sistem]
+        baris.append(f"| {i} | {_sel(contoh['pertanyaan'])} | " + " | ".join(sel) + " |")
+    gagal = [(s, h) for s, hasil in semua.items() for h in hasil if not h["benar"]]
+    if gagal:
+        baris += ["", "## Jawaban yang salah", "", "| Sistem | ID | Keterangan |", "|---|---|---|"]
+        baris += [f"| `{s}` | {h['id']} | {_sel(h['keterangan'])} |" for s, h in gagal]
+    return "\n".join(baris) + "\n"
+
+
+def tulis_ringkasan(folder: Path) -> Path:
+    semua = {p.stem: baca_jsonl(p) for p in sorted(folder.glob("*.jsonl"))}
+    # sistem rujukan "rencana" selalu di kolom pertama
+    semua = dict(sorted(semua.items(), key=lambda kv: (kv[0] != "rencana", kv[0])))
+    path = folder / "ringkasan.md"
+    path.write_text(ringkasan_markdown(semua), encoding="utf-8", newline="\n")
+    return path
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--db", type=Path, default=Path("data/processed/neraca.db"))
     parser.add_argument("--set", type=Path, default=Path("eval/pertanyaan.jsonl"))
+    parser.add_argument("--hasil", type=Path, default=Path("eval/hasil"),
+                        help="folder hasil per sistem dan ringkasan.md")
     args = parser.parse_args(argv)
 
     con = koneksi(args.db)
     soal = buat_set(con)
-    args.set.parent.mkdir(parents=True, exist_ok=True)
-    with args.set.open("w", encoding="utf-8") as fh:
-        for s in soal:
-            fh.write(json.dumps(s, ensure_ascii=False) + "\n")
+    tulis_jsonl(args.set, soal)
     print(f"{len(soal)} pertanyaan ditulis ke {args.set}")
 
-    alat = Alat(con)
-    hitung, per_kategori = Counter(), Counter()
+    hasil = jalankan_uji(soal, penjawab_rencana(Alat(con)), "rencana")
     print("\nMenjalankan rencana jawaban (tanpa LLM):")
-    for s in soal:
-        jawaban = jawab_dengan_rencana(alat, s)
-        benar, keterangan = nilai_jawaban(s["kunci"], jawaban)
-        hitung[benar] += 1
-        per_kategori[(s["kategori"], benar)] += 1
-        print(f"  {'OK  ' if benar else 'GAGAL'} {s['id']} {s['pertanyaan'][:62]:62} {keterangan}")
-    total = sum(hitung.values())
-    print(f"\n{hitung[True]}/{total} benar ({hitung[True] / total:.0%})")
-    for kat in dict.fromkeys(s["kategori"] for s in soal):
+    for h in hasil:
+        print(f"  {'OK  ' if h['benar'] else 'GAGAL'} {h['id']} {h['pertanyaan'][:62]:62} {h['keterangan']}")
+    benar = sum(h["benar"] for h in hasil)
+    print(f"\n{benar}/{len(hasil)} benar ({benar / len(hasil):.0%})")
+    per_kategori = Counter((h["kategori"], h["benar"]) for h in hasil)
+    for kat in dict.fromkeys(h["kategori"] for h in hasil):
         print(f"  {kat:14} {per_kategori[(kat, True)]}/{per_kategori[(kat, True)] + per_kategori[(kat, False)]}")
-    return 0 if hitung[False] == 0 else 1
+
+    tulis_jsonl(args.hasil / "rencana.jsonl", hasil)
+    ringkasan = tulis_ringkasan(args.hasil)
+    print(f"\nHasil ditulis ke {args.hasil / 'rencana.jsonl'} dan {ringkasan}")
+    return 0 if benar == len(hasil) else 1
 
 
 if __name__ == "__main__":

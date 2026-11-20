@@ -12,8 +12,13 @@ from neraca.alat import Alat, format_nilai  # noqa: E402
 from neraca.db import SKEMA  # noqa: E402
 from neraca.evaluasi.pertanyaan import (  # noqa: E402
     SPESIFIKASI,
+    baca_jsonl,
+    jalankan_uji,
     jawab_dengan_rencana,
     nilai_jawaban,
+    ringkasan_markdown,
+    tulis_jsonl,
+    tulis_ringkasan,
 )
 
 EMITEN = [("BBCA", "PT Bank Central Asia Tbk.", "G. Financials", "G1. Banks"),
@@ -184,6 +189,48 @@ class TesPenilaian(unittest.TestCase):
     def test_id_pertanyaan_unik(self):
         ids = [s[0] for s in SPESIFIKASI]
         self.assertEqual(len(ids), len(set(ids)))
+
+
+SOAL = [
+    {"id": "A1", "kategori": "lookup", "pertanyaan": "Total aset | BBCA?", "rencana": [],
+     "kunci": {"tipe": "angka", "nilai": "100", "satuan": "IDR"}},
+    {"id": "A2", "kategori": "jebakan", "pertanyaan": "Laba kotor TLKM?", "rencana": [],
+     "kunci": {"tipe": "tidak_tersedia"}},
+]
+
+
+class TesHasil(unittest.TestCase):
+    def test_jalankan_uji_mencatat_galat_sebagai_salah(self):
+        def penjawab(soal):
+            if soal["id"] == "A2":
+                raise RuntimeError("koneksi putus")
+            return {"tipe": "angka", "nilai": "100"}, [{"alat": "ambil_angka", "argumen": {}}]
+        hasil = jalankan_uji(SOAL, penjawab, "contoh")
+        self.assertEqual([h["benar"] for h in hasil], [True, False])
+        self.assertEqual(hasil[1]["jawaban"]["tipe"], "galat")
+        self.assertIn("koneksi putus", hasil[1]["jawaban"]["pesan"])
+        self.assertEqual(hasil[0]["jejak"][0]["alat"], "ambil_angka")
+
+    def test_ringkasan_membandingkan_sistem(self):
+        benar = jalankan_uji(SOAL, lambda s: ({"tipe": "angka", "nilai": "100"} if s["id"] == "A1"
+                                              else {"tipe": "tidak_tersedia"}, []), "rencana")
+        salah = jalankan_uji(SOAL, lambda s: ({"tipe": "angka", "nilai": "5"}, []), "agen")
+        teks = ringkasan_markdown({"rencana": benar, "agen": salah})
+        self.assertIn("| lookup | 1/1 | 0/1 |", teks)
+        self.assertIn("| **Total** | **2/2 (100%)** | **0/2 (0%)** |", teks)
+        self.assertIn("Total aset \\| BBCA?", teks)  # tanda | di-escape
+        self.assertIn("| `agen` | A1 |", teks)  # daftar jawaban salah
+
+    def test_tulis_baca_dan_rencana_di_kolom_pertama(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            tulis_jsonl(folder / "zeta.jsonl", jalankan_uji(SOAL, lambda s: ({"tipe": "x"}, []), "zeta"))
+            tulis_jsonl(folder / "rencana.jsonl",
+                        jalankan_uji(SOAL, lambda s: ({"tipe": "tidak_tersedia"}, []), "rencana"))
+            self.assertEqual(len(baca_jsonl(folder / "zeta.jsonl")), 2)
+            teks = tulis_ringkasan(folder).read_text(encoding="utf-8")
+        self.assertIn("| Kategori | `rencana` | `zeta` |", teks)
 
 
 if __name__ == "__main__":

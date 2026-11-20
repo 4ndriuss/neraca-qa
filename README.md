@@ -473,6 +473,15 @@ Perilaku yang sengaja dirancang dari temuan sebelumnya:
 
 Perintah ini menulis [`eval/pertanyaan.jsonl`](eval/pertanyaan.jsonl) (33 pertanyaan), lalu menjawab setiap pertanyaan dengan menjalankan **rencana** jawabannya, yaitu urutan panggilan alat yang benar, tanpa LLM. Kunci jawabannya dihitung dari fakta XBRL lewat jalur kode yang terpisah dari alat, sehingga hasil ini menguji alat dan datanya. Nanti agen LLM dinilai dengan kunci yang sama, tetapi tanpa diberi rencananya.
 
+Hasilnya disimpan per sistem penjawab:
+
+| File | Isi |
+|---|---|
+| `eval/hasil/<sistem>.jsonl` | Satu baris per pertanyaan: jawaban, kunci, benar/salah, keterangan, dan jejak panggilan alat |
+| [`eval/hasil/ringkasan.md`](eval/hasil/ringkasan.md) | Semua sistem berdampingan: per kategori, per pertanyaan, dan daftar jawaban yang salah |
+
+Ringkasan dibuat ulang dari semua file `.jsonl` di folder itu setiap kali `neraca-uji` dijalankan, sehingga sistem baru (agen LLM, baseline) otomatis muncul sebagai kolom baru. Isi file tidak memuat waktu, jadi diff git hanya berubah bila hasilnya berubah.
+
 | Kategori | Jumlah | Contoh | Hasil rencana |
 |---|---|---|---|
 | Lookup | 8 | Total aset BMRI; laba per saham UNVR (satuan penuh); liabilitas ADRO (USD) | 8/8 |
@@ -516,7 +525,8 @@ neraca-qa/
 │   ├── test_db.py            # tes pembangun database
 │   └── test_alat.py          # tes alat dan penilaian
 ├── eval/
-│   └── pertanyaan.jsonl      # 33 pertanyaan uji dengan kunci dan rencana jawaban
+│   ├── pertanyaan.jsonl      # 33 pertanyaan uji dengan kunci dan rencana jawaban
+│   └── hasil/                # hasil per sistem penjawab dan ringkasan.md
 ├── app/                      # (rencana) demo Streamlit
 ├── pyproject.toml
 └── README.md
