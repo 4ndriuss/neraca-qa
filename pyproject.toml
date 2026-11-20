@@ -18,6 +18,7 @@ neraca-pdf = "neraca.extract.pdf_tabel:main"
 neraca-cocok = "neraca.evaluasi.pdf_vs_xbrl:main"
 neraca-akun = "neraca.normalisasi.akun:main"
 neraca-db = "neraca.db:main"
+neraca-uji = "neraca.evaluasi.pertanyaan:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -21,6 +21,7 @@
 - [Ekstraksi tabel PDF](#ekstraksi-tabel-pdf)
 - [Normalisasi nama akun](#normalisasi-nama-akun)
 - [Database](#database)
+- [Alat dan set pertanyaan uji](#alat-dan-set-pertanyaan-uji)
 - [Struktur folder](#struktur-folder)
 
 ---
@@ -438,6 +439,54 @@ Decimal(r["nilai"])  # Decimal('54836305000000'), IDR, halaman 11
 
 SQLite dipilih untuk tahap ini karena tidak perlu server dan repo bisa langsung dicoba. Semua SQL-nya SQL standar, jadi pindah ke Postgres (misalnya untuk pgvector di jalur naratif) cukup mengganti koneksi dan menjalankan ulang pemuat.
 
+## Alat dan set pertanyaan uji
+
+### Alat
+
+[`src/neraca/alat.py`](src/neraca/alat.py) berisi fungsi yang nanti dipanggil LLM lewat *tool calling*. Semua perhitungan dilakukan di sini dengan `Decimal`; LLM tidak pernah berhitung sendiri.
+
+| Alat | Fungsi |
+|---|---|
+| `daftar_emiten`, `daftar_pos` | Emiten (sektor, mata uang, tahun laporan) dan 36 pos standar |
+| `ambil_angka` | Satu angka beserta sumbernya (PDF dan halaman, atau XBRL) dan status verifikasinya |
+| `pertumbuhan` | Selisih dan persen antartahun, dengan kedua angka dari laporan yang sama |
+| `rasio` | Margin kotor, margin usaha, margin bersih, ROE, ROA, DER, lengkap dengan definisinya |
+| `bandingkan` | Peringkat beberapa emiten menurut pos atau rasio |
+| `cari_baris` | Cari label di baris PDF, untuk pos di luar 36 pos standar |
+
+Definisi JSON Schema untuk tool calling ada di `DEFINISI_ALAT`, dan `Alat.jalankan(nama, argumen)` memanggil alat menurut nama, dengan galat dikembalikan sebagai data, bukan exception.
+
+Perilaku yang sengaja dirancang dari temuan sebelumnya:
+
+- **Alasan bila data tidak ada.** "Berapa laba kotor Telkom?" dijawab dengan "Telkom menyajikan beban per jenis, sehingga tidak ada laba kotor", bukan "tidak ditemukan". Hal yang sama untuk pendapatan bank, bunga bank syariah, dan tahun di luar cakupan.
+- **Penanda disajikan kembali.** Laba Telkom 2024 dari laporan 2024 otomatis disertai versi yang disajikan kembali di laporan 2025.
+- **Dasar sebanding.** `pertumbuhan` memakai laporan tahun terakhir untuk kedua angka, sehingga pendapatan ADRO 2023→2024 dihitung dari USD 2,14 miliar (sudah disajikan kembali), bukan USD 6,52 miliar.
+- **Rugi ke rugi.** Bila kedua tahun rugi, persen menyatakan perubahan besarnya rugi (GOTO: −94,30%, rugi menyusut). Bila tandanya berganti, persen tidak dihitung.
+- **Mata uang.** `bandingkan` menolak membandingkan nilai absolut ADRO (USD) dengan PTBA (IDR) tanpa kurs; rasio tetap bisa dibandingkan.
+- **Pos beban selalu positif**, karena PDF menulisnya dalam kurung sedangkan XBRL positif.
+
+### Set pertanyaan uji
+
+```bash
+.venv/Scripts/neraca-uji
+```
+
+Perintah ini menulis [`eval/pertanyaan.jsonl`](eval/pertanyaan.jsonl) (33 pertanyaan), lalu menjawab setiap pertanyaan dengan menjalankan **rencana** jawabannya, yaitu urutan panggilan alat yang benar, tanpa LLM. Kunci jawabannya dihitung dari fakta XBRL lewat jalur kode yang terpisah dari alat, sehingga hasil ini menguji alat dan datanya. Nanti agen LLM dinilai dengan kunci yang sama, tetapi tanpa diberi rencananya.
+
+| Kategori | Jumlah | Contoh | Hasil rencana |
+|---|---|---|---|
+| Lookup | 8 | Total aset BMRI; laba per saham UNVR (satuan penuh); liabilitas ADRO (USD) | 8/8 |
+| Perhitungan | 6 | Laba BBCA naik berapa persen; rugi GOTO menyusut berapa persen | 6/6 |
+| Rasio | 6 | Margin kotor UNVR; ROE BBRI; DER ASII | 6/6 |
+| Perbandingan | 4 | Margin kotor UNVR vs ICBP; bank dengan laba terbesar | 4/4 |
+| Jebakan | 7 | Laba kotor TLKM; bunga BRIS; laba ICBP (total atau milik induk); pendapatan ADRO 2023 dua versi; ADRO vs PTBA | 7/7 |
+| Tak terjawab | 2 | Total aset 2026; segmen es krim UNVR | 2/2 |
+| **Total** | **33** | | **33/33** |
+
+Penilaian: nilai uang benar bila selisihnya di bawah 0,5%, persen dan rasio bila selisihnya di bawah 0,05 poin, dan pertanyaan tak terjawab hanya benar bila sistem menyatakan data tidak tersedia.
+
+**Batasan:** pertanyaan dipilih dari pos yang XBRL-nya bisa dipercaya sebagai kunci. Kasus yang XBRL-nya terbukti berbeda dari PDF (arus kas BBRI 2024, dana syirkah temporer BRIS) tidak dimasukkan, karena di kasus itu jawaban dari PDF justru yang benar. Hasil 33/33 juga hanya berarti alat dan datanya mampu menjawab; kemampuan LLM memilih alat yang tepat belum diukur.
+
 ## Struktur folder
 
 ```
@@ -446,13 +495,15 @@ neraca-qa/
 │   ├── raw/                  # zip XBRL dan PDF asli dari IDX (tidak di-commit)
 │   └── processed/            # hasil olahan, bisa dibuat ulang (tidak di-commit)
 ├── src/neraca/
+│   ├── alat.py               # fungsi alat untuk tool calling LLM
 │   ├── db.py                 # pembangun database SQLite
 │   ├── ingest/
 │   │   └── xbrl.py           # parser XBRL IDX → CSV kunci jawaban
 │   ├── extract/
 │   │   └── pdf_tabel.py      # ekstraksi tabel PDF dari posisi kata
 │   ├── evaluasi/
-│   │   └── pdf_vs_xbrl.py    # akurasi ekstraksi PDF terhadap XBRL
+│   │   ├── pdf_vs_xbrl.py    # akurasi ekstraksi PDF terhadap XBRL
+│   │   └── pertanyaan.py     # set pertanyaan uji, kunci dari XBRL, dan penilaian
 │   ├── normalisasi/
 │   │   └── akun.py           # label PDF → 36 pos standar, dengan evaluasi
 │   ├── retrieval/            # (rencana) hybrid search dan reranking
@@ -462,8 +513,10 @@ neraca-qa/
 │   ├── test_xbrl.py          # tes parser XBRL
 │   ├── test_pdf_tabel.py     # tes ekstraktor PDF dan pencocokan
 │   ├── test_akun.py          # tes normalisasi nama akun
-│   └── test_db.py            # tes pembangun database
-├── eval/                     # (rencana) set pertanyaan uji
+│   ├── test_db.py            # tes pembangun database
+│   └── test_alat.py          # tes alat dan penilaian
+├── eval/
+│   └── pertanyaan.jsonl      # 33 pertanyaan uji dengan kunci dan rencana jawaban
 ├── app/                      # (rencana) demo Streamlit
 ├── pyproject.toml
 └── README.md
