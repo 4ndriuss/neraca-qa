@@ -292,6 +292,28 @@ KETERANGAN_SISTEM = {
 }
 
 
+def keterangan_sistem(nama: str) -> str:
+    if nama in KETERANGAN_SISTEM:
+        return KETERANGAN_SISTEM[nama]
+    if nama.startswith("gemini"):
+        return f"Agen LLM `{nama}` (Gemini API) dengan alat, hanya diberi pertanyaannya"
+    return ""
+
+
+def penjawab_agen(agen: Any, jeda: float = 0.0) -> Penjawab:
+    """Penjawab dari agen LLM. Agen hanya menerima teks pertanyaan, tanpa rencana atau kunci."""
+    import time
+
+    def jawab(soal: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        if jeda:
+            time.sleep(jeda)
+        hasil = agen.tanya(soal["pertanyaan"])
+        jawaban = {**hasil.jawaban, "teks": hasil.teks, "langkah": hasil.langkah,
+                   "token_masuk": hasil.token_masuk, "token_keluar": hasil.token_keluar}
+        return jawaban, hasil.jejak
+    return jawab
+
+
 def penjawab_rencana(alat: Alat) -> Penjawab:
     def jawab(soal: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         jejak = [{"alat": l["alat"], "argumen": l["argumen"]} for l in soal["rencana"]]
@@ -338,7 +360,7 @@ def ringkasan_markdown(semua: dict[str, list[dict[str, Any]]]) -> str:
     baris = ["# Hasil uji pertanyaan", "",
              "Dibuat otomatis oleh `neraca-uji` dari `eval/hasil/*.jsonl`; jangan diedit manual.", ""]
     baris += ["| Sistem | Keterangan |", "|---|---|"]
-    baris += [f"| `{s}` | {KETERANGAN_SISTEM.get(s, '')} |" for s in sistem]
+    baris += [f"| `{s}` | {keterangan_sistem(s)} |" for s in sistem]
     baris += ["", "## Per kategori", "",
               "| Kategori | " + " | ".join(f"`{s}`" for s in sistem) + " |",
               "|---|" + "---|" * len(sistem)]
@@ -383,26 +405,59 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--set", type=Path, default=Path("eval/pertanyaan.jsonl"))
     parser.add_argument("--hasil", type=Path, default=Path("eval/hasil"),
                         help="folder hasil per sistem dan ringkasan.md")
+    parser.add_argument("--sistem", choices=["rencana", "gemini"], default="rencana",
+                        help="rencana: tanpa LLM (bawaan); gemini: agen LLM lewat Gemini API")
+    parser.add_argument("--model", help="model Gemini (bawaan: gemini-3.8-flash)")
+    parser.add_argument("--id", help="hanya pertanyaan ini, dipisah koma (misalnya L01,H05); "
+                                     "hasilnya hanya dicetak, tidak disimpan")
+    parser.add_argument("--jeda", type=float, default=0.0,
+                        help="detik jeda antarpertanyaan, untuk batas permintaan tier gratis")
     args = parser.parse_args(argv)
 
     con = koneksi(args.db)
     soal = buat_set(con)
     tulis_jsonl(args.set, soal)
     print(f"{len(soal)} pertanyaan ditulis ke {args.set}")
+    if args.id:
+        pilih = {i.strip().upper() for i in args.id.split(",")}
+        soal = [s for s in soal if s["id"] in pilih]
+        if not soal:
+            parser.error(f"tidak ada pertanyaan dengan id {args.id}")
 
-    hasil = jalankan_uji(soal, penjawab_rencana(Alat(con)), "rencana")
-    print("\nMenjalankan rencana jawaban (tanpa LLM):")
-    for h in hasil:
-        print(f"  {'OK  ' if h['benar'] else 'GAGAL'} {h['id']} {h['pertanyaan'][:62]:62} {h['keterangan']}")
+    if args.sistem == "gemini":
+        from neraca.agen import buat_agen
+        try:
+            agen = buat_agen(args.model, args.db)
+        except RuntimeError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        nama, penjawab = agen.penyedia.nama, penjawab_agen(agen, args.jeda)
+        print(f"\nMenjawab dengan agen {nama} ({len(soal)} pertanyaan):")
+    else:
+        nama, penjawab = "rencana", penjawab_rencana(Alat(con))
+        print("\nMenjalankan rencana jawaban (tanpa LLM):")
+
+    hasil = []
+    for s in soal:  # satu per satu supaya kemajuan terlihat saat memakai LLM
+        h = jalankan_uji([s], penjawab, nama)[0]
+        hasil.append(h)
+        print(f"  {'OK  ' if h['benar'] else 'GAGAL'} {h['id']} {h['pertanyaan'][:62]:62} {h['keterangan']}",
+              flush=True)
     benar = sum(h["benar"] for h in hasil)
     print(f"\n{benar}/{len(hasil)} benar ({benar / len(hasil):.0%})")
     per_kategori = Counter((h["kategori"], h["benar"]) for h in hasil)
     for kat in dict.fromkeys(h["kategori"] for h in hasil):
         print(f"  {kat:14} {per_kategori[(kat, True)]}/{per_kategori[(kat, True)] + per_kategori[(kat, False)]}")
+    token = [h["jawaban"].get(k, 0) for h in hasil for k in ("token_masuk", "token_keluar")]
+    if any(token):
+        print(f"  token: {sum(token[::2]):,} masuk, {sum(token[1::2]):,} keluar")
 
-    tulis_jsonl(args.hasil / "rencana.jsonl", hasil)
+    if args.id:
+        print("\nUji sebagian tidak disimpan; jalankan tanpa --id untuk menyimpan hasil.")
+        return 0 if benar == len(hasil) else 1
+    tulis_jsonl(args.hasil / f"{nama}.jsonl", hasil)
     ringkasan = tulis_ringkasan(args.hasil)
-    print(f"\nHasil ditulis ke {args.hasil / 'rencana.jsonl'} dan {ringkasan}")
+    print(f"\nHasil ditulis ke {args.hasil / (nama + '.jsonl')} dan {ringkasan}")
     return 0 if benar == len(hasil) else 1
 
 

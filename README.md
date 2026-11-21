@@ -22,6 +22,7 @@
 - [Normalisasi nama akun](#normalisasi-nama-akun)
 - [Database](#database)
 - [Alat dan set pertanyaan uji](#alat-dan-set-pertanyaan-uji)
+- [Agen LLM](#agen-llm)
 - [Struktur folder](#struktur-folder)
 
 ---
@@ -496,6 +497,49 @@ Penilaian: nilai uang benar bila selisihnya di bawah 0,5%, persen dan rasio bila
 
 **Batasan:** pertanyaan dipilih dari pos yang XBRL-nya bisa dipercaya sebagai kunci. Kasus yang XBRL-nya terbukti berbeda dari PDF (arus kas BBRI 2024, dana syirkah temporer BRIS) tidak dimasukkan, karena di kasus itu jawaban dari PDF justru yang benar. Hasil 33/33 juga hanya berarti alat dan datanya mampu menjawab; kemampuan LLM memilih alat yang tepat belum diukur.
 
+## Agen LLM
+
+Agen menerima pertanyaan dalam bahasa biasa, memilih alat sendiri, lalu menyusun jawaban dengan sitasi. LLM hanya memilih alat dan menyusun kalimat; semua angka dan perhitungan berasal dari alat.
+
+```
+"Laba BCA 2024 naik berapa persen?"
+  -> LLM memanggil pertumbuhan(BBCA, laba_bersih_induk, 2023, 2024)
+  -> alat mengembalikan 12,74% beserta halaman 11
+  -> LLM memanggil jawab_akhir(teks="Naik 12,74% ... (hal. 11)", tipe="angka", nilai="12.74")
+```
+
+### Persiapan
+
+Agen memakai [Gemini API](https://ai.google.dev/gemini-api/docs) dengan model `gemini-3.8-flash`, yang punya tier gratis.
+
+```bash
+.venv/Scripts/python -m pip install -e ".[gemini]"
+```
+
+Buat API key di [Google AI Studio](https://aistudio.google.com/apikey), salin `.env.example` menjadi `.env`, lalu isi `GEMINI_API_KEY`. File `.env` diabaikan git.
+
+> **Privasi:** di tier gratis, Google dapat memakai isi permintaan untuk mengembangkan produknya (di tier berbayar tidak). Untuk proyek ini tidak masalah karena laporan keuangan emiten adalah data publik, tetapi jangan kirim data pribadi lewat tier gratis.
+
+### Pemakaian
+
+```bash
+.venv/Scripts/neraca-tanya "Laba bersih BCA 2024 naik berapa persen dibanding 2023?"
+.venv/Scripts/neraca-uji --sistem gemini --id L01,H05     # coba sebagian, tidak disimpan
+.venv/Scripts/neraca-uji --sistem gemini --jeda 5         # 33 pertanyaan, disimpan
+```
+
+Hasil putaran lengkap disimpan ke `eval/hasil/gemini-3.8-flash.jsonl` dan muncul sebagai kolom baru di [`eval/hasil/ringkasan.md`](eval/hasil/ringkasan.md), di samping `rencana`. Agen hanya menerima teks pertanyaan, tanpa rencana atau kunci jawaban.
+
+### Rancangan
+
+- **Inti agen tidak terikat penyedia** ([`agen/inti.py`](src/neraca/agen/inti.py)): loop, system prompt, dan format jawaban ditulis sekali. Gemini hanya satu adaptor ([`agen/gemini.py`](src/neraca/agen/gemini.py)), sehingga penyedia lain bisa ditambahkan untuk perbandingan tanpa mengubah intinya.
+- **Jawaban akhir lewat alat `jawab_akhir`**, berisi teks untuk pengguna dan data terstruktur (tipe, nilai), sehingga bisa dinilai otomatis dengan kunci yang sama seperti `rencana`. Bila agen lupa memanggilnya, agen diingatkan sekali.
+- **Batas langkah** (bawaan 8) supaya agen tidak berputar-putar menghabiskan kuota.
+- **Coba ulang otomatis** saat terkena batas permintaan (429) atau galat server, dengan jeda yang bertambah.
+- **Riwayat percakapan dikirim apa adanya**, termasuk metadata internal Gemini 3, sesuai pola *function calling* manual di SDK `google-genai`.
+
+Agen diuji dengan LLM tiruan (`tests/test_agen.py`), jadi loop-nya terbukti tanpa memakai kuota API. **Evaluasi dengan Gemini sungguhan belum dijalankan.**
+
 ## Struktur folder
 
 ```
@@ -504,6 +548,9 @@ neraca-qa/
 │   ├── raw/                  # zip XBRL dan PDF asli dari IDX (tidak di-commit)
 │   └── processed/            # hasil olahan, bisa dibuat ulang (tidak di-commit)
 ├── src/neraca/
+│   ├── agen/
+│   │   ├── inti.py           # loop agen, system prompt, jawab_akhir (tanpa ikatan penyedia)
+│   │   └── gemini.py         # adaptor Gemini API
 │   ├── alat.py               # fungsi alat untuk tool calling LLM
 │   ├── db.py                 # pembangun database SQLite
 │   ├── ingest/
@@ -523,7 +570,8 @@ neraca-qa/
 │   ├── test_pdf_tabel.py     # tes ekstraktor PDF dan pencocokan
 │   ├── test_akun.py          # tes normalisasi nama akun
 │   ├── test_db.py            # tes pembangun database
-│   └── test_alat.py          # tes alat dan penilaian
+│   ├── test_alat.py          # tes alat dan penilaian
+│   └── test_agen.py          # tes agen dengan LLM tiruan
 ├── eval/
 │   ├── pertanyaan.jsonl      # 33 pertanyaan uji dengan kunci dan rencana jawaban
 │   └── hasil/                # hasil per sistem penjawab dan ringkasan.md

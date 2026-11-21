@@ -12,6 +12,12 @@ dependencies = [
     "pdfplumber>=0.11",
 ]
 
+[project.optional-dependencies]
+# Agen LLM lewat Gemini API: pip install -e ".[gemini]"
+gemini = [
+    "google-genai>=2.33",
+]
+
 [project.scripts]
 neraca-xbrl = "neraca.ingest.xbrl:main"
 neraca-pdf = "neraca.extract.pdf_tabel:main"
@@ -19,6 +25,7 @@ neraca-cocok = "neraca.evaluasi.pdf_vs_xbrl:main"
 neraca-akun = "neraca.normalisasi.akun:main"
 neraca-db = "neraca.db:main"
 neraca-uji = "neraca.evaluasi.pertanyaan:main"
+neraca-tanya = "neraca.agen:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
