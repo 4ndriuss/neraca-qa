@@ -71,20 +71,25 @@ class SesiGemini:
 
         bagian = [types.Part(function_response=types.FunctionResponse(id=p.id, name=p.nama, response=r))
                   for p, r in hasil]
-        self.riwayat.append(types.Content(role="tool", parts=bagian))
+        # Gemini API hanya menerima peran "user" dan "model"; hasil fungsi dikirim sebagai "user".
+        self.riwayat.append(types.Content(role="user", parts=bagian))
         return self._hasilkan()
 
 
 class PenyediaGemini:
-    """Penyedia Gemini. ``percobaan`` mengatur coba ulang otomatis saat 429/5xx."""
+    """Penyedia Gemini. ``percobaan`` mengatur coba ulang otomatis saat 429/5xx;
+    ``batas_waktu`` adalah batas detik per permintaan."""
 
-    def __init__(self, model: str = MODEL_BAWAAN, api_key: str | None = None, percobaan: int = 6):
+    def __init__(self, model: str = MODEL_BAWAAN, api_key: str | None = None, percobaan: int = 6,
+                 batas_waktu: float = 120.0):
         from google import genai
         from google.genai import types
 
         self.model = model
         self.nama = model
-        opsi = types.HttpOptions(retry_options=types.HttpRetryOptions(
+        # Batas waktu per permintaan (detik); tanpa ini, model yang sedang sibuk bisa membuat
+        # panggilan menggantung lama tanpa pesan.
+        opsi = types.HttpOptions(timeout=int(batas_waktu * 1000), retry_options=types.HttpRetryOptions(
             attempts=percobaan, initial_delay=4.0, max_delay=60.0,
             http_status_codes=[408, 429, 500, 502, 503, 504]))
         self.klien = genai.Client(api_key=api_key, http_options=opsi) if api_key else \

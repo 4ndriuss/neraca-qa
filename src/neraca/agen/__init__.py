@@ -15,17 +15,49 @@ from pathlib import Path
 from neraca.agen.inti import Agen, HasilAgen, muat_env
 
 
-def buat_agen(model: str | None = None, db: Path = Path("data/processed/neraca.db"),
-              maks_langkah: int = 8) -> Agen:
-    """Agen Gemini siap pakai. API key dibaca dari .env atau variabel lingkungan."""
-    from neraca.agen.gemini import MODEL_BAWAAN, PenyediaGemini
+def buat_agen(
+    model: str | None = None,
+    db: Path = Path("data/processed/neraca.db"),
+    maks_langkah: int = 8,
+    percobaan: int = 6,
+    batas_waktu: float = 120.0,
+    penyedia: str = "groq",
+    api_key: str | None = None,
+) -> Agen:
+    """Buat agen siap pakai untuk penyedia ``groq`` (bawaan) atau ``gemini``."""
     from neraca.alat import Alat
 
     muat_env()
-    if not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
-        raise RuntimeError("GEMINI_API_KEY belum diatur. Buat file .env berisi "
-                           "GEMINI_API_KEY=... (lihat .env.example).")
-    return Agen(Alat(db), PenyediaGemini(model or MODEL_BAWAAN), maks_langkah)
+    p = (penyedia or "groq").strip().lower()
+    if p == "groq":
+        from neraca.agen.groq import MODEL_BAWAAN, PenyediaGroq
+
+        kunci = api_key or os.environ.get("GROQ_API_KEY")
+        if not kunci:
+            raise RuntimeError(
+                "GROQ_API_KEY belum diatur. Buat file .env berisi GROQ_API_KEY=... "
+                "(atau isi di sidebar demo). Key gratis: https://console.groq.com/keys"
+            )
+        return Agen(
+            Alat(db),
+            PenyediaGroq(model or MODEL_BAWAAN, api_key=kunci, percobaan=percobaan,
+                         batas_waktu=batas_waktu),
+            maks_langkah,
+        )
+    if p == "gemini":
+        from neraca.agen.gemini import MODEL_BAWAAN, PenyediaGemini
+
+        kunci = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        if not kunci:
+            raise RuntimeError("GEMINI_API_KEY belum diatur. Buat file .env berisi "
+                               "GEMINI_API_KEY=... (lihat .env.example).")
+        return Agen(
+            Alat(db),
+            PenyediaGemini(model or MODEL_BAWAAN, api_key=kunci, percobaan=percobaan,
+                           batas_waktu=batas_waktu),
+            maks_langkah,
+        )
+    raise RuntimeError(f"Penyedia tidak dikenal: {penyedia!r} (pilih 'groq' atau 'gemini').")
 
 
 def cetak(hasil: HasilAgen) -> None:
@@ -41,12 +73,19 @@ def cetak(hasil: HasilAgen) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Tanya laporan keuangan emiten BEI ke agen LLM.")
     parser.add_argument("pertanyaan", help="pertanyaan dalam Bahasa Indonesia")
-    parser.add_argument("--model", help="model Gemini (bawaan: gemini-3.8-flash)")
+    parser.add_argument("--penyedia", choices=["groq", "gemini"], default="groq",
+                        help="penyedia LLM (bawaan: groq)")
+    parser.add_argument("--model", help="nama model (bawaan groq: qwen/qwen3.8-27b)")
     args = parser.parse_args(argv)
     try:
-        agen = buat_agen(args.model)
+        agen = buat_agen(args.model, penyedia=args.penyedia)
     except RuntimeError as exc:
         print(exc, file=sys.stderr)
         return 1
-    cetak(agen.tanya(args.pertanyaan))
+    try:
+        hasil = agen.tanya(args.pertanyaan)
+    except Exception as exc:  # galat API (key salah, kuota habis, dsb.) tampil sebagai satu pesan
+        print(f"Gagal memanggil {agen.penyedia.nama}: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    cetak(hasil)
     return 0

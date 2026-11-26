@@ -17,6 +17,10 @@ dependencies = [
 gemini = [
     "google-genai>=2.33",
 ]
+# Demo Streamlit: pip install -e ".[gemini,demo]"
+demo = [
+    "streamlit>=1.50",
+]
 
 [project.scripts]
 neraca-xbrl = "neraca.ingest.xbrl:main"

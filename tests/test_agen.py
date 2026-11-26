@@ -145,7 +145,104 @@ class TesLainnya(unittest.TestCase):
 
     def test_keterangan_sistem(self):
         self.assertIn("Gemini", keterangan_sistem("gemini-3.8-flash"))
+        self.assertIn("Groq", keterangan_sistem("groq-llama-3.3-70b-versatile"))
         self.assertIn("tanpa LLM", keterangan_sistem("rencana"))
+
+
+class TesAdaptorGroq(unittest.TestCase):
+    def test_deklarasi_fungsi(self):
+        from neraca.agen.groq import deklarasi_fungsi
+
+        tools = deklarasi_fungsi(DEFINISI_ALAT + [ALAT_JAWAB])
+        self.assertEqual(len(tools), len(DEFINISI_ALAT) + 1)
+        self.assertEqual(tools[-1]["type"], "function")
+        self.assertEqual(tools[-1]["function"]["name"], "jawab_akhir")
+        ambil = next(t["function"] for t in tools if t["function"]["name"] == "ambil_angka")
+        self.assertEqual(ambil["parameters"]["required"], ["emiten", "pos", "tahun"])
+
+    def test_balasan_tool_call_dan_argumen_null(self):
+        from neraca.agen.groq import _balasan
+
+        respons = {
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {"id": "call_1", "type": "function",
+                         "function": {"name": "daftar_pos", "arguments": "null"}},
+                        {"id": "call_2", "type": "function",
+                         "function": {"name": "ambil_angka",
+                                      "arguments": '{"emiten":"BBCA","pos":"total_aset","tahun":2024}'}},
+                    ],
+                }
+            }],
+            "usage": {"prompt_tokens": 120, "completion_tokens": 25},
+        }
+        b, asisten = _balasan(respons)
+        self.assertEqual(b.teks, "")
+        self.assertEqual(len(b.panggilan), 2)
+        self.assertEqual(b.panggilan[0].argumen, {})
+        self.assertEqual(b.panggilan[1].argumen["emiten"], "BBCA")
+        self.assertEqual((b.token_masuk, b.token_keluar), (120, 25))
+        self.assertEqual(asisten["role"], "assistant")
+        self.assertEqual(len(asisten["tool_calls"]), 2)
+
+    def test_loop_penuh_dengan_transport_tiruan(self):
+        from neraca.agen.groq import PenyediaGroq
+
+        kiriman = []
+        balasan_api = [
+            {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [{
+                            "id": "call_grow",
+                            "type": "function",
+                            "function": {
+                                "name": "pertumbuhan",
+                                "arguments": '{"emiten":"BBCA","pos":"laba_bersih_induk","tahun_awal":2023,"tahun_akhir":2024}',
+                            },
+                        }],
+                    }
+                }],
+                "usage": {"prompt_tokens": 80, "completion_tokens": 20},
+            },
+            {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [{
+                            "id": "call_done",
+                            "type": "function",
+                            "function": {
+                                "name": "jawab_akhir",
+                                "arguments": '{"teks":"Naik 12,74% (hal. 11).","tipe":"angka","nilai":"12.74"}',
+                            },
+                        }],
+                    }
+                }],
+                "usage": {"prompt_tokens": 140, "completion_tokens": 30},
+            },
+        ]
+
+        def transport(muatan):
+            kiriman.append(list(muatan["messages"]))
+            return balasan_api.pop(0)
+
+        penyedia = PenyediaGroq(model="llama-3.3-70b-versatile", api_key="test", transport=transport)
+        hasil = Agen(Alat(buat_db()), penyedia).tanya("Laba BCA naik berapa persen?")
+        self.assertEqual(hasil.jawaban, {"tipe": "angka", "nilai": "12.74"})
+        self.assertEqual(hasil.teks, "Naik 12,74% (hal. 11).")
+        self.assertEqual((hasil.token_masuk, hasil.token_keluar), (220, 50))
+        # Panggilan kedua harus memuat pesan role="tool" dengan tool_call_id cocok
+        pesan_tool = [m for m in kiriman[1] if m["role"] == "tool"]
+        self.assertEqual(len(pesan_tool), 1)
+        self.assertEqual(pesan_tool[0]["tool_call_id"], "call_grow")
+        self.assertIn("12.74", pesan_tool[0]["content"])
 
 
 class TesAdaptorGemini(unittest.TestCase):

@@ -295,6 +295,8 @@ KETERANGAN_SISTEM = {
 def keterangan_sistem(nama: str) -> str:
     if nama in KETERANGAN_SISTEM:
         return KETERANGAN_SISTEM[nama]
+    if nama.startswith("groq-"):
+        return f"Agen LLM `{nama}` (Groq API) dengan alat, hanya diberi pertanyaannya"
     if nama.startswith("gemini"):
         return f"Agen LLM `{nama}` (Gemini API) dengan alat, hanya diberi pertanyaannya"
     return ""
@@ -405,9 +407,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--set", type=Path, default=Path("eval/pertanyaan.jsonl"))
     parser.add_argument("--hasil", type=Path, default=Path("eval/hasil"),
                         help="folder hasil per sistem dan ringkasan.md")
-    parser.add_argument("--sistem", choices=["rencana", "gemini"], default="rencana",
-                        help="rencana: tanpa LLM (bawaan); gemini: agen LLM lewat Gemini API")
-    parser.add_argument("--model", help="model Gemini (bawaan: gemini-3.8-flash)")
+    parser.add_argument("--sistem", choices=["rencana", "groq", "gemini"], default="rencana",
+                        help="rencana: tanpa LLM (bawaan); groq/gemini: agen LLM")
+    parser.add_argument("--model", help="nama model (bawaan groq: qwen/qwen3.8-27b; "
+                                        "gemini: gemini-3.8-flash)")
     parser.add_argument("--id", help="hanya pertanyaan ini, dipisah koma (misalnya L01,H05); "
                                      "hasilnya hanya dicetak, tidak disimpan")
     parser.add_argument("--jeda", type=float, default=0.0,
@@ -424,15 +427,15 @@ def main(argv: list[str] | None = None) -> int:
         if not soal:
             parser.error(f"tidak ada pertanyaan dengan id {args.id}")
 
-    if args.sistem == "gemini":
+    if args.sistem in ("groq", "gemini"):
         from neraca.agen import buat_agen
         try:
-            agen = buat_agen(args.model, args.db)
+            agen = buat_agen(args.model, args.db, penyedia=args.sistem)
         except RuntimeError as exc:
             print(exc, file=sys.stderr)
             return 1
         nama, penjawab = agen.penyedia.nama, penjawab_agen(agen, args.jeda)
-        print(f"\nMenjawab dengan agen {nama} ({len(soal)} pertanyaan):")
+        print(f"\nMenjawab dengan agen {nama} ({len(soal)} pertanyaan):", flush=True)
     else:
         nama, penjawab = "rencana", penjawab_rencana(Alat(con))
         print("\nMenjalankan rencana jawaban (tanpa LLM):")
